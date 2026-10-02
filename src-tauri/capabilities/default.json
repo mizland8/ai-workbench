@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the AI Workbench window may use",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-title",
+    "core:window:allow-request-user-attention",
+    "dialog:allow-open",
+    "opener:allow-open-url",
+    "opener:allow-default-urls",
+    "notification:default"
+  ]
+}
