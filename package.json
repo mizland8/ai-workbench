@@ -12,7 +12,7 @@
     "dev": "vite --host 127.0.0.1 --port 1420",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test test/",
+    "test": "node --test test/agent-status.test.js test/store.test.js test/usage.test.js",
     "test:ui": "vite build && node e2e/run.mjs",
     "install:linux": "bash scripts/install-linux.sh",
     "tauri": "tauri"
