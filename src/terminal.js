@@ -41,7 +41,7 @@ async function copyText(text) {
 // Status: idle → starting → running → exited, or failed when the CLI couldn't start.
 // For an AI tool, `agent` also tracks what the AI is doing: working, waiting for you, or idle.
 export class TerminalView {
-  constructor(host, { theme = 'terminal', tool = null, onStatus, onEvent, onFocus, onAgentState } = {}) {
+  constructor(host, { theme = 'terminal', fontSize = 13, tool = null, onStatus, onEvent, onFocus, onAgentState } = {}) {
     this.host = host;
     this.tool = tool;
     this.id = null;
@@ -52,7 +52,7 @@ export class TerminalView {
     this.callbacks = { onStatus, onEvent, onFocus };
     this.agent = new AgentStatus((state, previous) => onAgentState?.(state, previous));
     this.term = new Terminal({
-      allowProposedApi: true, cursorBlink: true, fontFamily: monoFonts, fontSize: 13, lineHeight: 1.1, scrollback: 10000,
+      allowProposedApi: true, cursorBlink: true, fontFamily: monoFonts, fontSize, lineHeight: 1.1, scrollback: 10000,
       macOptionIsMeta: true, theme: palettes[theme] ?? palettes.terminal,
       linkHandler: { activate: (event, uri) => openLink(uri) },
     });
@@ -201,6 +201,11 @@ export class TerminalView {
 
   setTheme(theme) {
     this.term.options.theme = palettes[theme] ?? palettes.terminal;
+  }
+
+  setFontSize(size) {
+    this.term.options.fontSize = size;
+    this.scheduleFit();
   }
 
   focus() {

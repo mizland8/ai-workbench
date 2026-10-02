@@ -2,6 +2,8 @@ mod env;
 mod sessions;
 mod terminals;
 mod tools;
+mod usage;
+mod subscriptions;
 
 use serde::Serialize;
 use tauri::Manager;
@@ -45,6 +47,7 @@ pub fn run() {
             path_info,
             home_dir,
             tools::detect_tools,
+            usage::usage_summary,
             terminals::terminal_start,
             terminals::terminal_write,
             terminals::terminal_resize,

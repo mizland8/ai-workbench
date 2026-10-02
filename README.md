@@ -25,13 +25,15 @@ On Windows the dialog shows the PowerShell or npm equivalents. The app reads you
 
 ## Workspace
 
-- **Projects.** Add a project folder, or drop one on the sidebar. Chats in a project run inside its folder; individual chats run in your home folder.
+- **Projects are pages.** Add a project folder, or drop one on the sidebar. Each project has its own page, with its own open chats and layout, and the sidebar switches between pages. Chats on other pages keep running. Chats without a project share the Individual chats page and run in your home folder.
 - **Chats.** Each chat is a live terminal running the AI you picked, or a plain Terminal. Close a chat at any time; opening it again resumes the same conversation. Use "Start a new conversation" from the chat's menu to begin again.
-- **Status.** Each chat's dot, tab, and pane header show whether its AI is working, needs you (a question or approval), done, or ready. A chat that finished while you were looking elsewhere stays marked done until you open it. The status bar links to chats that need you or are done. When the window isn't in front or the chat is hidden, you also get a desktop notification. The state is read from each CLI's own screen, for example "esc to interrupt" while it works.
-- **Layout.** Choose grid, columns, or focus. Drag a pane's header onto another pane to swap them.
-- **Keys.** Shift+Enter adds a new line. Ctrl+C copies selected text and otherwise interrupts, Ctrl+Shift+C always copies, and Ctrl+V pastes text (an image on the clipboard is passed to the CLI). Ctrl+Tab moves between chats.
-- **Files.** Drop files onto a chat, or use "+ file", to insert their paths into the prompt.
-- **Themes.** Terminal, PowerShell, or Amber. Fonts are local system monospace fonts; no remote fonts are loaded.
+- **Pinning.** Pin a chat to keep it in a column on the right on every page; its header names the AI, the chat and the project. Drag the column's edge to resize it. The usage summary can be pinned there too.
+- **Status.** Each chat's dot, tab and header show what its AI is doing: moving dots while it works, a flash when it needs you (a question or approval), and a flash when it's done while you were elsewhere, until you look. The status bar links to those chats, and you get a desktop notification when the window isn't in front or the chat is hidden. The state is read from each CLI's own screen, for example "esc to interrupt" while it works.
+- **Usage.** **AI usage** in the top right shows Claude and Codex subscription allowances at a glance. Open it for plan names, allowance meters, reset countdowns and times, plus each tool's tokens today and this week. Pin it to the side to keep it visible. Allowances come from the current account; token totals come from each tool's records on this computer, with cached context counted separately. Existing CLI sign-ins are reused, including Claude's macOS Keychain login. If a check fails, the panel explains why and labels any last-known allowances. Checks are cached, and refresh respects provider backoff.
+- **Settings.** Theme (Terminal, PowerShell or Amber), terminal text size, flashing, notifications, reopening chats at startup, and extra command-line options for each AI tool. Fonts are local system monospace fonts; no remote fonts are loaded.
+- **Layout.** Choose grid, columns, or focus for each page. Drag a pane's header onto another pane to swap them.
+- **Keys.** Shift+Enter adds a new line. Ctrl+C copies selected text and otherwise interrupts, Ctrl+Shift+C always copies, and Ctrl+V pastes text (an image on the clipboard is passed to the CLI). Ctrl+Tab moves between chats on the page.
+- **Files.** Drop files onto a chat, or use "+ file" (or "Insert file paths…" in the chat's menu), to insert their paths into the prompt.
 
 ## Where things are stored
 
@@ -51,6 +53,15 @@ npm run tauri build    # build installers into src-tauri/target/release/bundle/
 ```
 
 A plain `cargo build --release` still loads the interface from the dev server; `tauri build` turns on the feature that embeds it.
+
+On Linux you can install your own build for your user, without root:
+
+```bash
+npm run install:linux                      # build, then install or update
+bash scripts/install-linux.sh --uninstall  # remove it again
+```
+
+This puts the app in `~/.local/bin` with a launcher entry and icons, so it opens from your app launcher like any other app. Run it again after making changes to update the installed copy.
 
 ## Tests
 

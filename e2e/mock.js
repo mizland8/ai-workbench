@@ -1,6 +1,6 @@
 // Fake Tauri bridge: terminals echo what is typed; tests can push output, exits and session IDs.
 (() => {
-  const T = window.__AIW_TEST__ = { log: [], terminals: {}, fail: {}, toolsMissing: ['opencode'], notifications: [] };
+  const T = window.__AIW_TEST__ = { log: [], terminals: {}, fail: {}, toolsMissing: ['opencode'], notifications: [], usageOverrides: {} };
   window.Notification = class { static permission = 'granted'; static requestPermission() { return Promise.resolve('granted'); } constructor(title, options = {}) { T.notifications.push({ title, body: options.body }); } };
   const callbacks = new Map();
   const indexes = new Map();
@@ -29,6 +29,19 @@
           return { exists: !missing, isDir: !missing && !args.path.endsWith('.txt'), name: args.path.split('/').filter(Boolean).pop() };
         }
         case 'detect_tools': return ['claude', 'codex', 'gemini', 'opencode'].map(status);
+        case 'usage_summary': {
+          if (T.usageFailure) throw T.usageFailure;
+          const now = Date.now();
+          const recent = (input, output, cached, replies) => [{ start: now - 60_000, tokens: input + output + cached, input, output, cached, replies, cost: 0 }];
+          return { generatedAt: now, tools: [
+            { id: 'claude', buckets: recent(200, 1000, 50_000, 3), plan: 'Pro', problem: null, limitsUpdatedAt: now, limitsProblem: null,
+              limits: [{ label: '5-hour', usedPercent: 20, resetsAt: now + 7_200_000 }, { label: 'weekly', usedPercent: 40, resetsAt: now + 5 * 86_400_000 }] },
+            { id: 'codex', buckets: recent(2000, 1000, 0, 2), plan: 'plus', problem: null, limitsUpdatedAt: now, limitsProblem: null,
+              limits: [{ label: '5-hour', usedPercent: 33, resetsAt: now + 3_600_000 }, { label: 'weekly', usedPercent: 85, resetsAt: now + 3 * 86_400_000 }] },
+            { id: 'gemini', buckets: [], limits: [], plan: null, problem: null },
+            { id: 'opencode', buckets: [], limits: [], plan: null, problem: "OpenCode isn't installed." },
+          ].map(tool => ({ ...tool, ...T.usageOverrides[tool.id] })) };
+        }
         case 'terminal_stop_all': return null;
         case 'terminal_start': {
           const request = args.request;

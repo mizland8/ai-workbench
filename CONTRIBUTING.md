@@ -9,6 +9,8 @@ npm install
 npm run tauri dev
 ```
 
+`npm run tauri dev` reloads the interface when you save and rebuilds the Rust side when it changes. On Linux, `npm run install:linux` updates the copy in your app launcher once you're happy with a change.
+
 Run the tests before opening a pull request:
 
 ```bash
@@ -23,15 +25,18 @@ The interface is plain JavaScript with no framework; the backend is a small Rust
 
 | File | What it does |
 | --- | --- |
-| `src/main.js` | The window: sidebar, tabs, panes, dialogs, notifications |
+| `src/main.js` | The window: pages, sidebar, tabs, panes, the pinned dock, the usage panel, settings and other dialogs |
 | `src/terminal.js` | One xterm.js terminal connected to a CLI, including keys and paste |
 | `src/agent-status.js` | Reads what an AI is doing (working, waiting for you, idle) from its screen |
-| `src/store.js` | The saved workspace: projects, chats, layout, and upgrades from older versions |
+| `src/store.js` | The saved workspace: projects, chats, pages, pins and settings, and upgrades from older versions |
+| `src/usage.js` | Adds usage up into today and this week, and formats it |
 | `src/backend.js` | Calls into the Rust side; does nothing in a plain browser |
 | `src-tauri/src/terminals.rs` | Starts each CLI in a pseudo-terminal and streams it to the window |
 | `src-tauri/src/tools.rs` | The supported CLIs: finding them, versions, sign-in, install commands |
 | `src-tauri/src/sessions.rs` | Where each CLI saves conversations, so chats resume the right one |
 | `src-tauri/src/env.rs` | The environment CLIs run in, read from the user's login shell |
+| `src-tauri/src/usage.rs` | Reads each CLI's usage records and combines them with subscription allowances |
+| `src-tauri/src/subscriptions.rs` | Reads live Claude and Codex allowances, with login-aware caching, backoff and bounded requests |
 | `e2e/` | Interface tests: the built app in headless Chrome with a fake backend (`mock.js`) |
 
 ## Adding a CLI
@@ -41,7 +46,8 @@ The interface is plain JavaScript with no framework; the backend is a small Rust
 3. **`sessions.rs`:** add a way to tell whether a saved conversation exists, or to find a new one in a folder.
 4. **`src/store.js` and `src/tools.js`:** add it to `AI_TOOLS`, give it a name, tag, and colour, and add it to `chosenSessionTools` if it takes a session ID.
 5. **`src/agent-status.js`:** add the text its screen shows when it asks for approval. Check that its "working" hint is covered.
-6. Add tests: a real screen of each state in `test/agent-status.test.js`, and session lookups in `sessions.rs`.
+6. **`usage.rs`:** read its usage records, if it keeps any, into the same quarter-hour buckets.
+7. Add tests: a real screen of each state in `test/agent-status.test.js`, and session lookups in `sessions.rs`.
 
 ## Testing on Windows and macOS
 
@@ -55,7 +61,8 @@ The automatic tests can't open the app, so new releases need a quick check by ha
 6. **Files:** drop a file onto a chat, and use "+ file". The path is inserted.
 7. **Panes:** drag a pane's header onto another pane, and the two swap.
 8. **Terminal chat:** it opens PowerShell on Windows, or your login shell on macOS.
-9. **Quit:** close the app, then check Task Manager or Activity Monitor. No `claude`, `codex`, `gemini`, `opencode`, or `node` processes from it are left.
+9. **Usage:** open AI usage, verify Claude and Codex session/weekly allowances and local reset dates against their CLI displays, then refresh and pin the panel. On macOS, check Claude credentials stored in Keychain. Sign out or switch accounts and confirm old allowances disappear. Gemini local token totals are supported; Antigravity (AGY) subscription quotas are not connected.
+10. **Quit:** close the app, then check Task Manager or Activity Monitor. No `claude`, `codex`, `gemini`, `opencode`, or `node` processes from it are left.
 
 Windows is the likeliest to break, because npm installs CLIs there as `.cmd` launchers that run through `cmd.exe`, and installers run through PowerShell. When something fails, include the error shown in the pane in the issue.
 

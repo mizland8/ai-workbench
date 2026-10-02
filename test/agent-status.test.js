@@ -51,6 +51,18 @@ for (const [name, [tool, state]] of Object.entries(expected)) {
   test(`${name} reads as ${state}`, () => assert.equal(detectAgentState(tool, screens[name]), state));
 }
 
+test('in a tall pane, the status line near the top still counts', () => {
+  const tall = [...screens.claudeWorking, ...Array(40).fill('')];
+  assert.equal(detectAgentState('claude', tall), 'working');
+});
+
+test('questions wrapped in a narrow pane still count', () => {
+  const gemini = [' │ Do you trust the files in this     │', ' │ folder?                            │', ' │                                    │',
+    ' │ ● 1. Trust folder (ai-workbench-g… │', ' │   3. Don\'t trust                   │', ' ╰────────────────────────────────────╯', '   Press Ctrl+O to show more lines'];
+  assert.equal(detectAgentState('gemini', gemini), 'waiting');
+  assert.equal(detectAgentState('claude', [' ❯ No, exit', '   Yes, I trust this', '   folder', ' Enter to confirm · Esc to cancel']), 'waiting');
+});
+
 test('only the bottom of the screen counts', () => {
   const old = ['  Do you want to proceed?', ...Array(25).fill(''), '❯', '  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents'];
   assert.equal(detectAgentState('claude', old), 'idle');

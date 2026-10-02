@@ -7,6 +7,9 @@ export const desktopOnly = 'Live sessions run in the AI Workbench desktop app.';
 export const detectTools = (toolPaths, refresh = false) =>
   isDesktop ? invoke('detect_tools', { toolPaths, refresh }) : Promise.resolve(null);
 
+// Recent token use per AI tool, read from each tool's own records (src-tauri/src/usage.rs).
+export const usageSummary = (toolPaths, refreshLimits = false) => isDesktop ? invoke('usage_summary', { toolPaths, refreshLimits }) : Promise.resolve(null);
+
 // Output arrives as raw bytes; exits, notices and discovered session IDs arrive as objects.
 export function startTerminal(request, onOutput, onEvent) {
   if (!isDesktop) return Promise.reject(new Error(desktopOnly));

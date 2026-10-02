@@ -2,46 +2,100 @@ export const AI_TOOLS = ['claude', 'codex', 'gemini', 'opencode'];
 export const TOOLS = [...AI_TOOLS, 'shell'];
 export const LAYOUTS = ['grid', 'columns', 'focus'];
 export const THEMES = ['terminal', 'powershell', 'amber'];
-export const storageKey = 'ai-workbench.workspace.v3';
+export const WIDGETS = ['usage'];
+// Each project is a page; chats without a project share this one.
+export const INDIVIDUAL = 'individual';
+export const storageKey = 'ai-workbench.workspace.v4';
+const v3Key = 'ai-workbench.workspace.v3';
 const legacyKey = 'ai-workbench.sessions.v2';
 
 // Claude Code and Gemini CLI start a conversation under an ID we choose; Codex and OpenCode report theirs.
 const chosenSessionTools = ['claude', 'gemini'];
 
-export function emptyState() {
-  return { projects: [], chats: [], open: [], active: null, layout: 'grid', theme: 'terminal', collapsed: [], toolPaths: {} };
+export function defaultSettings() {
+  return { fontSize: 13, notifications: true, flash: true, reopenChats: true, dockWidth: 460, toolArgs: {} };
 }
 
+export function emptyState() {
+  return { projects: [], chats: [], page: INDIVIDUAL, pages: {}, pinned: [], theme: 'terminal', collapsed: [], toolPaths: {}, settings: defaultSettings() };
+}
+
+const emptyPage = (layout = 'grid') => ({ open: [], active: null, layout });
 const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isText = v => typeof v === 'string';
 const list = v => Array.isArray(v) ? v : [];
+const clamp = (n, low, high, fallback) => Number.isFinite(n) ? Math.min(high, Math.max(low, Math.round(n))) : fallback;
+
+export const pageKeyOf = chat => chat.projectId ?? INDIVIDUAL;
+export const pinnedChat = id => `chat:${id}`;
+export const isPinned = (state, id) => state.pinned.includes(pinnedChat(id));
+export const pinnedChatIds = state => state.pinned.filter(key => key.startsWith('chat:')).map(key => key.slice(5));
+
+function normalizeSettings(value) {
+  const settings = defaultSettings();
+  if (!isObject(value)) return settings;
+  settings.fontSize = clamp(value.fontSize, 9, 24, settings.fontSize);
+  settings.dockWidth = clamp(value.dockWidth, 260, 900, settings.dockWidth);
+  for (const key of ['notifications', 'flash', 'reopenChats']) if (typeof value[key] === 'boolean') settings[key] = value[key];
+  if (isObject(value.toolArgs)) {
+    for (const tool of AI_TOOLS) if (isText(value.toolArgs[tool]) && value.toolArgs[tool].trim()) settings.toolArgs[tool] = value.toolArgs[tool];
+  }
+  return settings;
+}
 
 // Keeps every entry that is still usable instead of discarding the whole workspace over one bad one.
+// Also reads the version 3 layout, where all open chats shared one list.
 export function normalize(value) {
   const state = emptyState();
   if (!isObject(value)) return state;
   const projectIds = new Set();
   for (const p of list(value.projects)) {
-    if (!isObject(p) || !isText(p.id) || !isText(p.name) || !isText(p.path) || projectIds.has(p.id)) continue;
+    if (!isObject(p) || !isText(p.id) || !isText(p.name) || !isText(p.path) || projectIds.has(p.id) || p.id === INDIVIDUAL) continue;
     projectIds.add(p.id);
     state.projects.push({ id: p.id, name: p.name, path: p.path });
   }
-  const chatIds = new Set();
+  const chats = new Map();
   for (const c of list(value.chats)) {
-    if (!isObject(c) || !isText(c.id) || !TOOLS.includes(c.tool) || chatIds.has(c.id)) continue;
-    chatIds.add(c.id);
-    state.chats.push({ id: c.id, tool: c.tool, title: isText(c.title) && c.title.trim() ? c.title : 'New chat',
+    if (!isObject(c) || !isText(c.id) || !TOOLS.includes(c.tool) || chats.has(c.id)) continue;
+    const chat = { id: c.id, tool: c.tool, title: isText(c.title) && c.title.trim() ? c.title : 'New chat',
       projectId: projectIds.has(c.projectId) ? c.projectId : null,
-      sessionId: isText(c.sessionId) && c.sessionId ? c.sessionId : null });
+      sessionId: isText(c.sessionId) && c.sessionId ? c.sessionId : null };
+    chats.set(chat.id, chat);
+    state.chats.push(chat);
   }
-  state.open = [...new Set(list(value.open))].filter(id => chatIds.has(id));
-  state.active = state.open.includes(value.active) ? value.active : state.open[0] ?? null;
-  if (LAYOUTS.includes(value.layout)) state.layout = value.layout;
+  state.pinned = [...new Set(list(value.pinned))].filter(key => WIDGETS.includes(key) || (isText(key) && chats.has(key.slice(5)) && key.startsWith('chat:')));
+  const pinned = new Set(pinnedChatIds(state));
+  const pageFor = (key, layout) => state.pages[key] ??= emptyPage(LAYOUTS.includes(layout) ? layout : 'grid');
+
+  if (isObject(value.pages)) {
+    for (const [key, saved] of Object.entries(value.pages)) {
+      if ((key !== INDIVIDUAL && !projectIds.has(key)) || !isObject(saved)) continue;
+      const page = pageFor(key, saved.layout);
+      page.open = [...new Set(list(saved.open))].filter(id => chats.has(id) && pageKeyOf(chats.get(id)) === key && !pinned.has(id));
+      page.active = page.open.includes(saved.active) ? saved.active : page.open[0] ?? null;
+    }
+  } else {
+    // Version 3: one list of open chats and one layout for everything.
+    for (const id of new Set(list(value.open))) {
+      const chat = chats.get(id);
+      if (chat && !pinned.has(id)) pageFor(pageKeyOf(chat), value.layout).open.push(id);
+    }
+    for (const page of Object.values(state.pages)) page.active = page.open[0] ?? null;
+    const active = chats.get(value.active);
+    if (active && state.pages[pageKeyOf(active)]?.open.includes(active.id)) state.pages[pageKeyOf(active)].active = active.id;
+    if (active) state.page = pageKeyOf(active);
+    if (LAYOUTS.includes(value.layout)) for (const key of [INDIVIDUAL, ...projectIds]) pageFor(key, value.layout);
+  }
+  const validPage = key => key === INDIVIDUAL || projectIds.has(key);
+  if (validPage(value.page)) state.page = value.page;
+  else if (!validPage(state.page) || (state.page === INDIVIDUAL && !value.active && state.projects.length)) state.page = state.projects[0]?.id ?? INDIVIDUAL;
+  pageFor(state.page);
   if (THEMES.includes(value.theme)) state.theme = value.theme;
   state.collapsed = list(value.collapsed).filter(id => projectIds.has(id));
   if (isObject(value.toolPaths)) {
     for (const tool of AI_TOOLS) if (isText(value.toolPaths[tool]) && value.toolPaths[tool].trim()) state.toolPaths[tool] = value.toolPaths[tool];
   }
+  state.settings = normalizeSettings(value.settings);
   return state;
 }
 
@@ -58,7 +112,7 @@ export function migrateV2(value) {
 
 export function loadState(storage) {
   let raw;
-  try { raw = storage.getItem(storageKey); }
+  try { raw = storage.getItem(storageKey) ?? storage.getItem(v3Key); }
   catch { return { state: emptyState(), problem: 'Local storage is unavailable, so changes won’t be saved.' }; }
   if (raw === null) {
     let legacy = null;
@@ -81,16 +135,35 @@ export function saveState(storage, state) {
   catch { return false; }
 }
 
+// With "reopen chats" turned off, the app starts with every chat closed; pinned widgets stay.
+export function closeAllChats(state) {
+  for (const page of Object.values(state.pages)) Object.assign(page, { open: [], active: null });
+  state.pinned = state.pinned.filter(key => WIDGETS.includes(key));
+}
+
+export function currentPage(state) {
+  return state.pages[state.page] ??= emptyPage();
+}
+
+export function goToPage(state, key) {
+  if (key !== INDIVIDUAL && !state.projects.some(p => p.id === key)) return;
+  state.page = key;
+  currentPage(state);
+}
+
 export function addProject(state, name, path) {
   const project = { id: crypto.randomUUID(), name, path };
   state.projects.push(project);
+  state.pages[project.id] = emptyPage(currentPage(state).layout);
   return project;
 }
 
 export function removeProject(state, id) {
   for (const chat of state.chats.filter(c => c.projectId === id)) removeChat(state, chat.id);
   state.projects = state.projects.filter(p => p.id !== id);
+  delete state.pages[id];
   state.collapsed = state.collapsed.filter(key => key !== id);
+  if (state.page === id) goToPage(state, state.projects[0]?.id ?? INDIVIDUAL);
 }
 
 export function addChat(state, tool, projectId, title = '') {
@@ -113,17 +186,28 @@ export function startNewConversation(chat) {
   ensureSessionId(chat);
 }
 
+// Opening a chat goes to its project's page, unless it's pinned, which shows it on every page.
 export function openChat(state, id) {
-  if (!state.chats.some(c => c.id === id)) return;
-  if (!state.open.includes(id)) state.open.push(id);
-  state.active = id;
+  const chat = state.chats.find(c => c.id === id);
+  if (!chat || isPinned(state, id)) return;
+  goToPage(state, pageKeyOf(chat));
+  const page = currentPage(state);
+  if (!page.open.includes(id)) page.open.push(id);
+  page.active = id;
+}
+
+function leavePage(state, id) {
+  const chat = state.chats.find(c => c.id === id);
+  const page = chat && state.pages[pageKeyOf(chat)];
+  const index = page ? page.open.indexOf(id) : -1;
+  if (index === -1) return;
+  page.open.splice(index, 1);
+  if (page.active === id) page.active = page.open[Math.min(index, page.open.length - 1)] ?? null;
 }
 
 export function closeChat(state, id) {
-  const index = state.open.indexOf(id);
-  if (index === -1) return;
-  state.open.splice(index, 1);
-  if (state.active === id) state.active = state.open[Math.min(index, state.open.length - 1)] ?? null;
+  leavePage(state, id);
+  state.pinned = state.pinned.filter(key => key !== pinnedChat(id));
 }
 
 export function removeChat(state, id) {
@@ -131,13 +215,67 @@ export function removeChat(state, id) {
   state.chats = state.chats.filter(c => c.id !== id);
 }
 
+export function pinChat(state, id) {
+  if (!state.chats.some(c => c.id === id) || isPinned(state, id)) return;
+  leavePage(state, id);
+  state.pinned.push(pinnedChat(id));
+}
+
+// An unpinned chat goes back to its project's page.
+export function unpinChat(state, id) {
+  const chat = state.chats.find(c => c.id === id);
+  if (!chat || !isPinned(state, id)) return;
+  state.pinned = state.pinned.filter(key => key !== pinnedChat(id));
+  const page = state.pages[pageKeyOf(chat)] ??= emptyPage();
+  if (!page.open.includes(id)) page.open.push(id);
+  page.active = id;
+}
+
+export function pinWidget(state, widget) {
+  if (WIDGETS.includes(widget) && !state.pinned.includes(widget)) state.pinned.push(widget);
+}
+
+export function unpinWidget(state, widget) {
+  state.pinned = state.pinned.filter(key => key !== widget);
+}
+
+// Every chat with a live terminal: open on some page, or pinned.
+export function runningChatIds(state) {
+  return [...Object.values(state.pages).flatMap(page => page.open), ...pinnedChatIds(state)];
+}
+
 export function swapChats(state, a, b) {
-  const i = state.open.indexOf(a), j = state.open.indexOf(b);
+  const open = currentPage(state).open;
+  const i = open.indexOf(a), j = open.indexOf(b);
   if (i === -1 || j === -1 || i === j) return;
-  [state.open[i], state.open[j]] = [state.open[j], state.open[i]];
+  [open[i], open[j]] = [open[j], open[i]];
 }
 
 export function toggleCollapsed(state, projectId) {
   state.collapsed = state.collapsed.includes(projectId)
     ? state.collapsed.filter(id => id !== projectId) : [...state.collapsed, projectId];
+}
+
+// Command-line options as typed in the settings, split like a shell would: spaces separate,
+// quotes group.
+export function splitArgs(text) {
+  const args = [];
+  let current = '', quote = null, started = false;
+  for (const ch of String(text ?? '')) {
+    if (quote) {
+      if (ch === quote) quote = null; else current += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      started = true;
+    } else if (/\s/.test(ch)) {
+      if (started) args.push(current);
+      current = '';
+      started = false;
+    } else {
+      current += ch;
+      started = true;
+    }
+  }
+  if (started) args.push(current);
+  return args;
 }

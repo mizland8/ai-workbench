@@ -98,6 +98,9 @@ pub struct StartRequest {
     known_sessions: Vec<String>,
     cwd: Option<String>,
     tool_path: Option<String>,
+    /// Extra command-line options for the CLI, from the settings.
+    #[serde(default)]
+    extra_args: Vec<String>,
     cols: u16,
     rows: u16,
 }
@@ -174,6 +177,7 @@ fn plan(request: &StartRequest) -> Result<Plan, String> {
                     None => plan.discover = Some(Tool::Opencode),
                 },
             }
+            plan.args.extend(request.extra_args.iter().filter(|a| !a.is_empty()).cloned());
         }
     }
     Ok(plan)
@@ -362,9 +366,17 @@ mod tests {
             cwd: Some(std::env::temp_dir().display().to_string()),
             // Any existing file works as the CLI here; the plan never runs it.
             tool_path: Some(std::env::current_exe().unwrap().display().to_string()),
+            extra_args: Vec::new(),
             cols: 80,
             rows: 24,
         }
+    }
+
+    #[test]
+    fn extra_options_from_settings_are_added() {
+        let mut req = request(StartKind::Chat, Some(Tool::Codex), None);
+        req.extra_args = vec!["--approve-for-me".into(), "-c".into(), "model_reasoning_effort=max".into()];
+        assert_eq!(plan(&req).unwrap().args, ["--no-daemon", "--approve-for-me", "-c", "model_reasoning_effort=max"]);
     }
 
     #[test]
@@ -472,7 +484,7 @@ mod real_cli_tests {
             let events = Channel::new(move |body| { let _ = tx.send(body); Ok(()) });
             let session_id = matches!(tool, Tool::Claude | Tool::Gemini).then(uuid);
             let request = StartRequest { kind: StartKind::Chat, tool: Some(tool), session_id, known_sessions: Vec::new(),
-                cwd: Some(project.display().to_string()), tool_path: None, cols: 110, rows: 32 };
+                cwd: Some(project.display().to_string()), tool_path: None, extra_args: Vec::new(), cols: 110, rows: 32 };
             let started = start(&terminals, request, events).unwrap_or_else(|e| panic!("{tool:?} didn't start: {e}"));
             let mut output = Vec::new();
             let early_exit = collect(&rx, &mut output, |screen| screen.lines().count() >= 6, Duration::from_secs(25));
@@ -508,7 +520,7 @@ mod real_cli_tests {
 
     fn chat(tool: Tool, session_id: Option<String>, project: &Path) -> StartRequest {
         StartRequest { kind: StartKind::Chat, tool: Some(tool), session_id, known_sessions: Vec::new(),
-            cwd: Some(project.display().to_string()), tool_path: None, cols: 110, rows: 32 }
+            cwd: Some(project.display().to_string()), tool_path: None, extra_args: Vec::new(), cols: 110, rows: 32 }
     }
 
     fn open(terminals: &Terminals, request: StartRequest) -> (Started, Receiver<InvokeResponseBody>) {

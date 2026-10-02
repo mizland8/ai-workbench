@@ -13,8 +13,14 @@ const workingHints = [/esc to interrupt/, /esc interrupt/, /esc to cancel/];
 const spinnerAtEnd = /(?:^|[\s·•])[\u2801-\u28ff]\s*$/;
 
 export function detectAgentState(tool, lines) {
-  const bottom = lines.slice(-20);
-  const text = bottom.join('\n');
+  // Claude Code and Gemini CLI draw from the top down, so in a tall pane their status line can sit
+  // far above the bottom row: read the last lines that have text, not the last rows of the screen.
+  let end = lines.length;
+  while (end > 0 && !lines[end - 1].trim()) end--;
+  const bottom = lines.slice(Math.max(0, end - 20), end);
+  // Narrow panes wrap the CLI's questions, often inside a box: match against the text with the
+  // line breaks and box borders taken out.
+  const text = bottom.map(line => line.replace(/[│┃║╭╮╰╯─━]/g, ' ').trim()).join(' ').replace(/\s+/g, ' ');
   if ([...(waitingPatterns[tool] ?? []), ...yesNo].some(pattern => pattern.test(text))) return 'waiting';
   if (workingHints.some(pattern => pattern.test(text)) || bottom.slice(-6).some(line => spinnerAtEnd.test(line))) return 'working';
   return 'idle';
