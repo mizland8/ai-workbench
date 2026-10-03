@@ -14,18 +14,18 @@ use crate::env;
 pub enum Tool {
     Claude,
     Codex,
-    Gemini,
+    Agy,
     Opencode,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 4] = [Tool::Claude, Tool::Codex, Tool::Gemini, Tool::Opencode];
+    pub const ALL: [Tool; 4] = [Tool::Claude, Tool::Codex, Tool::Agy, Tool::Opencode];
 
     pub fn id(self) -> &'static str {
         match self {
             Tool::Claude => "claude",
             Tool::Codex => "codex",
-            Tool::Gemini => "gemini",
+            Tool::Agy => "agy",
             Tool::Opencode => "opencode",
         }
     }
@@ -34,18 +34,18 @@ impl Tool {
         match self {
             Tool::Claude => "Claude Code",
             Tool::Codex => "Codex",
-            Tool::Gemini => "Gemini CLI",
+            Tool::Agy => "Antigravity CLI",
             Tool::Opencode => "OpenCode",
         }
     }
 
-    /// Arguments that start the CLI's own sign-in flow. Gemini CLI has no login command; it asks
-    /// how to sign in the first time it starts.
+    /// Arguments that start the CLI's own sign-in flow. Antigravity CLI has no login command; it
+    /// opens a Google sign-in the first time it starts.
     pub fn login_args(self) -> &'static [&'static str] {
         match self {
             Tool::Claude => &["auth", "login"],
             Tool::Codex => &["login"],
-            Tool::Gemini => &[],
+            Tool::Agy => &[],
             Tool::Opencode => &["providers", "login"],
         }
     }
@@ -57,7 +57,9 @@ impl Tool {
             Tool::Claude if windows => "irm https://claude.ai/install.ps1 | iex",
             Tool::Claude => "curl -fsSL https://claude.ai/install.sh | bash",
             Tool::Codex => "npm install -g @openai/codex",
-            Tool::Gemini => "npm install -g @google/gemini-cli",
+            Tool::Agy if windows => "irm https://antigravity.google/cli/install.ps1 | iex",
+            // The script is served gzip-compressed, so curl has to unpack it before bash reads it.
+            Tool::Agy => "curl -fsSL --compressed https://antigravity.google/cli/install.sh | bash",
             Tool::Opencode if windows => "npm install -g opencode-ai",
             Tool::Opencode => "curl -fsSL https://opencode.ai/install | bash",
         }
@@ -71,7 +73,7 @@ impl Tool {
         match self {
             Tool::Claude => "https://code.claude.com/docs/en/setup",
             Tool::Codex => "https://github.com/openai/codex",
-            Tool::Gemini => "https://github.com/google-gemini/gemini-cli",
+            Tool::Agy => "https://antigravity.google",
             Tool::Opencode => "https://opencode.ai/docs",
         }
     }
@@ -158,7 +160,7 @@ pub fn detect(tool: Tool, custom: Option<&str>, node_found: bool) -> ToolStatus 
                 None
             }
         }),
-        Tool::Gemini => gemini_signed_in(),
+        Tool::Agy => agy_signed_in(),
         Tool::Opencode => opencode_signed_in(),
     };
     status
@@ -184,10 +186,11 @@ fn parse_version(text: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Only an API key or Vertex setup is certain. A saved Google sign-in can still be refused by the
-/// service (Gemini CLI rejects personal Google accounts), so it counts as unknown.
-fn gemini_signed_in() -> Option<bool> {
-    ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI"].iter().any(|name| env::var(name).is_some()).then_some(true)
+/// Antigravity CLI keeps its Google sign-in in the system keyring, which we can't read without a
+/// prompt. Its conversations folder only appears after a signed-in first start, so it counts as
+/// signed in; otherwise it's unknown.
+fn agy_signed_in() -> Option<bool> {
+    crate::sessions::agy_dir().join("conversations").is_dir().then_some(true)
 }
 
 /// OpenCode works without signing in (it ships free models), so only saved providers are reported.

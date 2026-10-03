@@ -7,8 +7,9 @@
   font-family: var(--mono);
   font-size:12px;
 }
-:root[data-theme=powershell] { --bg:#012456; --pane:#012456; --chrome:#08356b; --text:#eeeeee; --dim:#9eb6d0; --border:#285381; --accent:#f5de84; --selection:#164f82; --ready:#7fe0a0; --warn:#f5de84; --danger:#ff8f99; --working:#9dbcff; }
-:root[data-theme=amber] { --bg:#15120c; --pane:#18150e; --chrome:#211c13; --text:#dbc9a6; --dim:#9e8d70; --border:#433927; --accent:#e1b56c; --selection:#3a2e1c; --ready:#b8c27a; --warn:#e1b56c; --danger:#e08a6f; --working:#9db0c8; }
+/* The other themes set these variables from src/themes.js. On light themes the AI tools' pastel
+   colors would be faint as text, so text in a tool's color is darkened there. */
+:root[data-tone=light] :is(.tool-tag, .tab-tool, .usage-chip, .usage-tool h3) { filter:brightness(.55) saturate(1.6); }
 * { box-sizing:border-box; }
 [hidden] { display:none !important; }
 body { margin:0; background:var(--bg); color:var(--text); }
@@ -58,8 +59,12 @@ code { font:inherit; color:var(--text); overflow-wrap:anywhere; }
 .count { margin-left:auto; color:var(--dim); font-size:10px; }
 .project-path { color:var(--dim); overflow-wrap:anywhere; padding:7px 8px 6px 21px; font-size:10px; line-height:1.5; }
 .add-chat { color:var(--dim); font-size:10px; padding:5px 8px 5px 21px; }
-.chat-row { width:100%; display:flex; align-items:center; gap:7px; padding:6px 8px 6px 12px; font-size:11px; border-left:2px solid transparent; }
-.chat-row.selected { border-left-color:var(--accent); background:var(--selection); }
+.chat-item { display:flex; align-items:center; border-left:2px solid transparent; }
+.chat-item.selected { border-left-color:var(--accent); background:var(--selection); }
+.chat-row { flex:1; min-width:0; display:flex; align-items:center; gap:7px; padding:6px 4px 6px 12px; font-size:11px; }
+.row-remove { flex-shrink:0; padding:4px 8px; font-size:13px; line-height:1; color:var(--dim); opacity:.45; }
+.chat-item:hover .row-remove, .row-remove:focus-visible { opacity:1; }
+.row-remove:hover { color:var(--danger); }
 .chat-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
 /* What each chat is doing: closed, starting, working, waiting (needs you), done, ready, stopped, failed. */
 .run-dot { width:7px; height:7px; flex-shrink:0; border-radius:50%; border:1px solid var(--dim); }
@@ -252,3 +257,11 @@ label.check span { display:flex; flex-direction:column; gap:2px; }
 fieldset > button { margin-top:4px; border-color:var(--border); font-size:11px; }
 
 @media(max-width:950px) { .sidebar { width:220px; } .app-status .hints { display:none; } .app-header { gap:12px; } .tool-cards { grid-template-columns:minmax(0, 1fr); } .header-page { display:none; } }
+
+.theme-swatches { display:flex; width:62%; height:12px; margin:-2px 0 10px auto; border:1px solid var(--border); }
+.theme-swatches span { flex:1; }
+.update-button { color:var(--accent); border-color:var(--accent); }
+.update-line { margin:4px 0 8px; }
+.update-notes { white-space:pre-wrap; max-height:120px; overflow:auto; border-left:2px solid var(--border); padding-left:8px; }
+.update-actions { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:6px; }
+.update-actions button { border-color:var(--border); }

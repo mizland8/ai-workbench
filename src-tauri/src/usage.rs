@@ -1,7 +1,7 @@
 //! How much each AI CLI has been used lately, read from the records each one keeps on disk.
 //!
-//! Claude Code, Codex and Gemini CLI save token counts with every reply; OpenCode keeps totals per
-//! session in its database. Live subscription limits come from `subscriptions`.
+//! Claude Code and Codex save token counts with every reply; OpenCode keeps totals per session in
+//! its database. Antigravity CLI keeps none on disk. Live subscription limits come from `subscriptions`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -273,43 +273,6 @@ fn window_label(minutes: u64) -> String {
     }
 }
 
-/// Gemini CLI sessions: one JSON record per line; replies carry `tokens`, and a later record with
-/// the same `id` replaces an earlier one. Older versions saved a single document with `messages`.
-/// Gemini counts cached tokens as part of the input. Files are small, so they're read whole.
-fn gemini_file(path: &Path, parsed: &mut Parsed) {
-    let mut by_id: HashMap<String, Event> = HashMap::new();
-    let mut unnamed = Vec::new();
-    let mut take = |record: &Value| {
-        let tokens = &record["tokens"];
-        if !tokens.is_object() {
-            return;
-        }
-        let Some(at) = record["timestamp"].as_str().and_then(parse_iso_ms) else { return };
-        let n = |key: &str| tokens[key].as_u64().unwrap_or(0);
-        let (input, output, cached) = (n("input").saturating_sub(n("cached")), n("output") + n("thoughts"), n("cached"));
-        let amount = Amount { tokens: n("total").max(input + output + cached), input, output, cached, replies: 1, cost: 0.0 };
-        let event = Event { at, key: None, amount };
-        match record["id"].as_str() {
-            Some(id) => {
-                by_id.insert(id.to_string(), event);
-            }
-            None => unnamed.push(event),
-        }
-    };
-    let text = fs::read_to_string(path).unwrap_or_default();
-    let documents: Vec<Value> = match serde_json::from_str::<Value>(&text) {
-        Ok(document) => vec![document],
-        Err(_) => text.lines().filter_map(|line| serde_json::from_str(line).ok()).collect(),
-    };
-    for document in &documents {
-        match document["messages"].as_array() {
-            Some(messages) => messages.iter().for_each(&mut take),
-            None => take(document),
-        }
-    }
-    *parsed = Parsed { events: by_id.into_values().chain(unnamed).collect(), ..Parsed::default() };
-}
-
 type OpencodeCache = (SystemTime, Instant, Result<Vec<Event>, String>);
 static OPENCODE_CACHE: Mutex<Option<OpencodeCache>> = Mutex::new(None);
 
@@ -410,11 +373,10 @@ pub fn report(tool_paths: &HashMap<String, String>, refresh_limits: bool) -> Usa
         apply_subscription(&mut usage, subscriptions::codex(codex_path.as_deref(), refresh_limits));
         usage
     });
-    let gemini = thread::spawn(move || {
-        let tmp = env::var("GEMINI_CLI_HOME").map(PathBuf::from).unwrap_or_else(env::home_dir).join(".gemini/tmp");
-        let session = |n: &str| n.starts_with("session-") && (n.ends_with(".jsonl") || n.ends_with(".json"));
-        usage_from_files(Tool::Gemini, recent_files(&tmp, 2, since, &session), gemini_file, since_ms)
-    });
+    // Antigravity CLI only shows its usage inside a chat (`/usage`), so there is nothing to read.
+    let agy = thread::spawn(|| ToolUsage { id: Tool::Agy, buckets: Vec::new(), limits: Vec::new(), plan: None,
+        problem: Some("Antigravity CLI doesn't save usage on this computer. Type /usage in a chat to see it.".into()),
+        limits_updated_at: None, limits_problem: None });
     let opencode = thread::spawn(move || {
         let mut usage = ToolUsage { id: Tool::Opencode, buckets: Vec::new(), limits: Vec::new(), plan: None, problem: None, limits_updated_at: None, limits_problem: None };
         match tools::resolve(Tool::Opencode, opencode_path.as_deref()) {
@@ -428,7 +390,7 @@ pub fn report(tool_paths: &HashMap<String, String>, refresh_limits: bool) -> Usa
     });
 
     let empty = |id| ToolUsage { id, buckets: Vec::new(), limits: Vec::new(), plan: None, problem: Some("Couldn't read the usage records.".into()), limits_updated_at: None, limits_problem: None };
-    let tools = [(Tool::Claude, claude), (Tool::Codex, codex), (Tool::Gemini, gemini), (Tool::Opencode, opencode)]
+    let tools = [(Tool::Claude, claude), (Tool::Codex, codex), (Tool::Agy, agy), (Tool::Opencode, opencode)]
         .into_iter()
         .map(|(id, handle)| handle.join().unwrap_or_else(|_| empty(id)))
         .collect();
@@ -524,23 +486,6 @@ mod tests {
             Limit { label: "5-hour".into(), used_percent: 7.0, resets_at: Some(1_790_907_855_000) },
             Limit { label: "weekly".into(), used_percent: 12.0, resets_at: Some(1_791_048_939_000) },
         ]);
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn gemini_keeps_the_latest_record_for_each_reply() {
-        let dir = scratch("gemini");
-        let file = dir.join("session-2026-10-02T10-00-0f8e2c1a.jsonl");
-        write_lines(&file, &[
-            serde_json::json!({"id": "u1", "type": "user", "timestamp": "2026-10-02T10:00:00Z", "content": "hi"}),
-            serde_json::json!({"id": "g1", "type": "gemini", "timestamp": "2026-10-02T10:00:03Z", "content": "hello"}),
-            serde_json::json!({"id": "g1", "type": "gemini", "timestamp": "2026-10-02T10:00:03Z",
-                "tokens": {"input": 50, "output": 20, "cached": 10, "thoughts": 5, "tool": 0, "total": 75}}),
-        ]);
-        let mut parsed = Parsed::default();
-        gemini_file(&file, &mut parsed);
-        assert_eq!(parsed.events.len(), 1);
-        assert_eq!(parsed.events[0].amount, Amount { tokens: 75, input: 40, output: 25, cached: 10, replies: 1, cost: 0.0 });
         fs::remove_dir_all(dir).unwrap();
     }
 

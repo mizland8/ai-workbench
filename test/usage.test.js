@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { usageTotals, formatTokens, formatLimitReset, formatLimitCountdown, headerAllowances } from '../src/usage.js';
+import { usageTotals, formatTokens, formatLimitReset, formatLimitCountdown, headerAllowances, trackResets, takeDueResets } from '../src/usage.js';
 
 const at = (y, m, d, h, min = 0) => new Date(y, m - 1, d, h, min).getTime();
 const bucket = (start, input, output, extra = {}) => ({ start, tokens: input + output, input, output, cached: 0, replies: 1, cost: 0, ...extra });
@@ -53,10 +53,29 @@ test('header keeps each subscription visible and excludes ended windows', () => 
   const report = { tools: [
     { id: 'claude', limits: [{ usedPercent: 100, resetsAt: now - 1 }, { usedPercent: 22, resetsAt: now + 1 }], limitsProblem: 'offline' },
     { id: 'codex', limits: [{ usedPercent: 33, resetsAt: null }, { usedPercent: 85, resetsAt: now + 1 }] },
-    { id: 'gemini', limits: [] },
+    { id: 'agy', limits: [] },
   ] };
   assert.deepEqual(headerAllowances(report, now), [
     { id: 'claude', usedPercent: 22, stale: true }, { id: 'codex', usedPercent: 85, stale: false },
   ]);
   assert.deepEqual(headerAllowances(null), []);
+});
+
+test('a used allowance is announced once, when its reset time comes', () => {
+  const now = at(2026, 10, 3, 12);
+  const report = used => ({ tools: [
+    { id: 'claude', limits: [{ label: '5-hour', usedPercent: used, resetsAt: now + 60_000 }, { label: 'weekly', usedPercent: 0, resetsAt: now + 90_000 }] },
+    { id: 'codex', limits: [{ label: 'weekly', usedPercent: 50, resetsAt: null }, { label: '5-hour', usedPercent: 40, resetsAt: now - 1 }] },
+    { id: 'agy', limits: [] },
+  ] });
+  const tracked = trackResets(new Map(), report(85), now);
+  assert.deepEqual([...tracked.keys()], ['claude:5-hour', 'claude:weekly'], 'resets with no time, or already past, are not tracked');
+  // A later report of the same window, a few seconds off and with less use, keeps the highest use.
+  trackResets(tracked, { tools: [{ id: 'claude', limits: [{ label: '5-hour', usedPercent: 10, resetsAt: now + 62_000 }] }] }, now);
+  assert.deepEqual(takeDueResets(tracked, now + 30_000), []);
+  assert.deepEqual(takeDueResets(tracked, now + 120_000), [{ tool: 'claude', label: '5-hour', resetsAt: now + 62_000, usedPercent: 85 }],
+    'the unused weekly allowance resets quietly');
+  assert.equal(tracked.size, 0);
+  trackResets(tracked, report(85), now + 120_000);
+  assert.equal(tracked.size, 0, 'an older report never brings back a reset that has passed');
 });

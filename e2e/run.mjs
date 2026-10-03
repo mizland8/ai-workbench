@@ -265,8 +265,44 @@ try {
   await setField('theme', 'amber');
   await wait(150);
   check('theme applies to terminals', await q(`getComputedStyle(${pane(codex)}.querySelector('.xterm-rows')).color`) === 'rgb(219, 201, 166)');
+  await setField('theme', 'github-light');
+  await wait(150);
+  check('a light theme recolors the app and its terminals', await q(`getComputedStyle(document.body).backgroundColor`) === 'rgb(255, 255, 255)'
+    && await q(`getComputedStyle(${pane(codex)}.querySelector('.xterm-rows')).color`) === 'rgb(31, 35, 40)'
+    && await q(`getComputedStyle(document.documentElement).colorScheme`) === 'light');
+  check('the theme list is grouped', await q(`document.querySelectorAll('dialog [name=theme] optgroup').length`) === 4 && await q(`document.querySelectorAll('dialog [name=theme] option').length`) >= 60);
+  await page.shot('14b-light-theme');
+  await setField('font', 'jetbrains-mono');
+  await wait(800);
+  check('a bundled font loads and applies to terminals and the app', await q(`document.fonts.check("13px 'JetBrains Mono'")`)
+    && /JetBrains Mono/.test(await q(`getComputedStyle(${pane(codex)}.querySelector('.xterm-rows')).fontFamily`))
+    && /JetBrains Mono/.test(await q(`getComputedStyle(document.body).fontFamily`))
+    && (await saved()).settings.font === 'jetbrains-mono');
+  await setField('theme', 'dracula');
+  await wait(150);
   await page.shot('14-settings');
   await page.eval(`document.querySelector('dialog [type=submit]').click();`);
+  await wait(100);
+
+  // 12b. Updates: a newer release is offered, installed, and the app restarts after asking
+  await page.eval(`__AIW_TEST__.update = { rid: 1, currentVersion: '0.1.0', version: '0.2.0', date: null, body: 'More themes', rawJson: {} };`);
+  await click('[data-action=settings]');
+  await wait(100);
+  check('settings show the version and a check button', /Version 0\.1\.0/.test(await q(`document.querySelector('.update-status').innerText`)) && await q(`!!document.querySelector('[data-update=check]')`));
+  await click('[data-update=check]');
+  await wait(150);
+  check('a newer release is offered, in settings and the header', /0\.2\.0 is available/.test(await q(`document.querySelector('.update-status').innerText`))
+    && /More themes/.test(await q(`document.querySelector('.update-status').innerText`)) && await q(`!document.querySelector('#update-button').hidden`));
+  await click('[data-update=install]');
+  await wait(150);
+  check('installing reports progress, then offers a restart', await q(`!!document.querySelector('[data-update=restart]')`) && /restart to update/.test(await q(`document.querySelector('#update-button').textContent`)));
+  await click('[data-update=restart]');
+  await wait(100);
+  check('restarting with running chats asks first', /Restart AI Workbench\?/.test(await q(`document.querySelector('dialog[open]:last-of-type')?.innerText ?? ''`)) || /Restart AI Workbench\?/.test(await q(`[...document.querySelectorAll('dialog[open]')].map(d => d.innerText).join(' ')`)));
+  await page.eval(`[...document.querySelectorAll('dialog[open]')].at(-1).querySelector('[type=submit]').click();`);
+  await wait(100);
+  check('confirming restarts the app', (await calls('plugin:process|restart')).length === 1);
+  await page.eval(`document.querySelectorAll('dialog[open]').forEach(d => d.close());`);
   await wait(100);
   await page.eval(`${pane(codex)}.querySelector('[data-action=pane-menu]').click();`);
   await page.eval(`document.querySelector('#menu [data-menu-item="2"]').click();`);
@@ -307,9 +343,34 @@ try {
   check('deleted chat is gone', (await saved()).chats.every(c => c.id !== claude));
 
   // 16. Failure
-  await page.eval(`__AIW_TEST__.fail.gemini = "Gemini CLI isn't installed, or isn't on your PATH.";`);
-  await newChat('gemini');
+  await page.eval(`__AIW_TEST__.fail.agy = "Antigravity CLI isn't installed, or isn't on your PATH.";`);
+  await newChat('agy');
   check('a CLI that cannot start explains why', await q(`(() => { const o = [...document.querySelectorAll('.pane-overlay.failed')].at(-1); return !!o && o.innerText.includes("isn't installed") && !!o.querySelector('[data-action=tools]'); })()`));
+
+  // 16b. The sidebar's × removes a chat, asking first unless the safeguard is turned off
+  const lastAgy = async () => (await saved()).chats.filter(c => c.tool === 'agy').at(-1)?.id;
+  const removable = await lastAgy();
+  await click(`.row-remove[data-id="${removable}"]`);
+  await wait(50);
+  check('the sidebar × asks “Are you sure?”', /Are you sure\?/.test(await q(`document.querySelector('dialog[open]')?.innerText ?? ''`)));
+  await page.eval(`document.querySelector('dialog[open] [data-dismiss]').click();`);
+  await wait(100);
+  check('cancelling keeps the chat', (await saved()).chats.some(c => c.id === removable));
+  await click(`.row-remove[data-id="${removable}"]`);
+  await wait(50);
+  await page.eval(`document.querySelector('dialog[open] [type=submit]').click();`);
+  await wait(100);
+  check('confirming removes the chat from the sidebar', !(await saved()).chats.some(c => c.id === removable) && !(await q(`!!document.querySelector('.chat-row[data-id="${removable}"]')`)));
+  await newChat('agy');
+  const unguarded = await lastAgy();
+  await click('[data-action=settings]');
+  await wait(100);
+  await setField('confirmRemove', false);
+  await page.eval(`document.querySelector('dialog [type=submit]').click();`);
+  await wait(100);
+  await click(`.row-remove[data-id="${unguarded}"]`);
+  await wait(100);
+  check('with the safeguard off, × removes at once', !(await q(`!!document.querySelector('dialog[open]')`)) && !(await saved()).chats.some(c => c.id === unguarded));
 
   // 17. Reload restores every running chat, on every page, and pins
   await page.eval(`${pane(codex)}.querySelector('[data-action=pin]').click();`);

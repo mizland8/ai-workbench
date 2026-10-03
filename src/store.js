@@ -1,7 +1,9 @@
-export const AI_TOOLS = ['claude', 'codex', 'gemini', 'opencode'];
+import { THEME_LIST, FONTS, DEFAULT_FONT } from './themes.js';
+
+export const AI_TOOLS = ['claude', 'codex', 'agy', 'opencode'];
 export const TOOLS = [...AI_TOOLS, 'shell'];
 export const LAYOUTS = ['grid', 'columns', 'focus'];
-export const THEMES = ['terminal', 'powershell', 'amber'];
+export const THEMES = THEME_LIST.map(t => t.id);
 export const WIDGETS = ['usage'];
 // Each project is a page; chats without a project share this one.
 export const INDIVIDUAL = 'individual';
@@ -9,11 +11,14 @@ export const storageKey = 'ai-workbench.workspace.v4';
 const v3Key = 'ai-workbench.workspace.v3';
 const legacyKey = 'ai-workbench.sessions.v2';
 
-// Claude Code and Gemini CLI start a conversation under an ID we choose; Codex and OpenCode report theirs.
-const chosenSessionTools = ['claude', 'gemini'];
+// Claude Code starts a conversation under an ID we choose; Codex, Antigravity CLI and OpenCode report theirs.
+const chosenSessionTools = ['claude'];
+// Gemini CLI was replaced by Antigravity CLI (agy). Its chats carry over, but their Gemini
+// conversations can't be opened there, so they start a new one.
+const renamedTools = { gemini: 'agy' };
 
 export function defaultSettings() {
-  return { fontSize: 13, notifications: true, flash: true, reopenChats: true, dockWidth: 460, toolArgs: {} };
+  return { fontSize: 13, font: DEFAULT_FONT, notifications: true, notifyResets: true, checkUpdates: true, flash: true, reopenChats: true, confirmRemove: true, dockWidth: 460, toolArgs: {} };
 }
 
 export function emptyState() {
@@ -36,7 +41,8 @@ function normalizeSettings(value) {
   if (!isObject(value)) return settings;
   settings.fontSize = clamp(value.fontSize, 9, 24, settings.fontSize);
   settings.dockWidth = clamp(value.dockWidth, 260, 900, settings.dockWidth);
-  for (const key of ['notifications', 'flash', 'reopenChats']) if (typeof value[key] === 'boolean') settings[key] = value[key];
+  if (isText(value.font) && FONTS[value.font]) settings.font = value.font;
+  for (const key of ['notifications', 'notifyResets', 'checkUpdates', 'flash', 'reopenChats', 'confirmRemove']) if (typeof value[key] === 'boolean') settings[key] = value[key];
   if (isObject(value.toolArgs)) {
     for (const tool of AI_TOOLS) if (isText(value.toolArgs[tool]) && value.toolArgs[tool].trim()) settings.toolArgs[tool] = value.toolArgs[tool];
   }
@@ -56,10 +62,12 @@ export function normalize(value) {
   }
   const chats = new Map();
   for (const c of list(value.chats)) {
-    if (!isObject(c) || !isText(c.id) || !TOOLS.includes(c.tool) || chats.has(c.id)) continue;
-    const chat = { id: c.id, tool: c.tool, title: isText(c.title) && c.title.trim() ? c.title : 'New chat',
+    if (!isObject(c) || !isText(c.id) || chats.has(c.id)) continue;
+    const tool = renamedTools[c.tool] ?? c.tool;
+    if (!TOOLS.includes(tool)) continue;
+    const chat = { id: c.id, tool, title: isText(c.title) && c.title.trim() ? c.title : 'New chat',
       projectId: projectIds.has(c.projectId) ? c.projectId : null,
-      sessionId: isText(c.sessionId) && c.sessionId ? c.sessionId : null };
+      sessionId: tool === c.tool && isText(c.sessionId) && c.sessionId ? c.sessionId : null };
     chats.set(chat.id, chat);
     state.chats.push(chat);
   }
@@ -99,7 +107,7 @@ export function normalize(value) {
   return state;
 }
 
-const v2Tools = { Codex: 'codex', Claude: 'claude', Gemini: 'gemini', OpenCode: 'opencode' };
+const v2Tools = { Codex: 'codex', Claude: 'claude', Gemini: 'agy', OpenCode: 'opencode' };
 
 // Version 2 had no live sessions: untitled chats without notes were placeholders, so only named ones carry over.
 // The old data stays in storage under its own key.

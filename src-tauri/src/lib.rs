@@ -31,12 +31,21 @@ fn home_dir() -> String {
     env::home_dir().display().to_string()
 }
 
+/// Whether this copy of the app can replace itself with an update. On Linux only the AppImage
+/// can; a copy built from source or installed from a .deb or .rpm is updated the way it came.
+#[tauri::command]
+fn can_self_update() -> bool {
+    !cfg!(target_os = "linux") || std::env::var_os("APPIMAGE").is_some()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(terminals::Terminals::default())
         .setup(|_| {
             // Reading the login shell's environment takes a moment; start before the first chat needs it.
@@ -46,6 +55,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             path_info,
             home_dir,
+            can_self_update,
             tools::detect_tools,
             usage::usage_summary,
             terminals::terminal_start,

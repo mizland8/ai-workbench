@@ -61,10 +61,23 @@ The automatic tests can't open the app, so new releases need a quick check by ha
 6. **Files:** drop a file onto a chat, and use "+ file". The path is inserted.
 7. **Panes:** drag a pane's header onto another pane, and the two swap.
 8. **Terminal chat:** it opens PowerShell on Windows, or your login shell on macOS.
-9. **Usage:** open AI usage, verify Claude and Codex session/weekly allowances and local reset dates against their CLI displays, then refresh and pin the panel. On macOS, check Claude credentials stored in Keychain. Sign out or switch accounts and confirm old allowances disappear. Gemini local token totals are supported; Antigravity (AGY) subscription quotas are not connected.
-10. **Quit:** close the app, then check Task Manager or Activity Monitor. No `claude`, `codex`, `gemini`, `opencode`, or `node` processes from it are left.
+9. **Usage:** open AI usage, verify Claude and Codex session/weekly allowances and local reset dates against their CLI displays, then refresh and pin the panel. On macOS, check Claude credentials stored in Keychain. Sign out or switch accounts and confirm old allowances disappear. Antigravity CLI (agy) shows no local usage; its subscription quotas are not connected.
+10. **Quit:** close the app, then check Task Manager or Activity Monitor. No `claude`, `codex`, `agy`, `opencode`, or `node` processes from it are left.
 
 Windows is the likeliest to break, because npm installs CLIs there as `.cmd` launchers that run through `cmd.exe`, and installers run through PowerShell. When something fails, include the error shown in the pane in the issue.
+
+## Releasing and updates
+
+Installed copies check `https://github.com/mizland8/ai-workbench/releases/latest/download/latest.json` (Settings → Updates) and install a newer version after checking its signature against the public key in `src-tauri/tauri.conf.json`.
+
+1. Raise the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` (they must match, for example `0.2.0`).
+2. Commit, then tag and push: `git tag v0.2.0 && git push origin main v0.2.0`.
+3. The Release workflow builds every system, signs the update packages, and attaches them and `latest.json` to a **draft** release.
+4. Publish the draft on GitHub. Installed copies see the update from then on.
+
+The workflow signs with the repository secret `TAURI_SIGNING_PRIVATE_KEY` (the contents of the private key file; `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is empty). Keep a backup of that key: without it, installed copies can't accept updates and would need reinstalling by hand. Local builds don't need the key; only release builds (`--config src-tauri/tauri.release.conf.json`) make update packages.
+
+On Linux only the AppImage replaces itself. A copy built with `scripts/install-linux.sh` or installed from a .deb or .rpm is told about the update and links to the release; rebuild or reinstall it the same way.
 
 ## Reporting problems
 

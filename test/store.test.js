@@ -13,7 +13,7 @@ const workspace = () => ({
     { id: 'c1', tool: 'claude', projectId: 'p1', title: 'Fix login', sessionId: '0f8e2c1a-5b6d-4e7f-8a9b-0c1d2e3f4a5b' },
     { id: 'c2', tool: 'codex', projectId: 'p1', title: 'Tests', sessionId: null },
     { id: 'c3', tool: 'shell', projectId: null, title: 'Scratch', sessionId: null },
-    { id: 'c4', tool: 'gemini', projectId: 'p2', title: 'Copy', sessionId: '1f8e2c1a-5b6d-4e7f-8a9b-0c1d2e3f4a5b' },
+    { id: 'c4', tool: 'agy', projectId: 'p2', title: 'Copy', sessionId: '1f8e2c1a-5b6d-4e7f-8a9b-0c1d2e3f4a5b' },
   ],
   page: 'p1',
   pages: {
@@ -23,7 +23,7 @@ const workspace = () => ({
   },
   pinned: ['chat:c4', 'usage'],
   theme: 'amber', collapsed: ['p2'], toolPaths: { codex: '/opt/codex' },
-  settings: { fontSize: 15, notifications: false, flash: true, reopenChats: true, dockWidth: 380, toolArgs: { codex: '--approve-for-me' } },
+  settings: { fontSize: 15, font: 'fira-code', notifications: false, notifyResets: false, checkUpdates: false, flash: true, reopenChats: true, confirmRemove: false, dockWidth: 380, toolArgs: { codex: '--approve-for-me' } },
 });
 
 test('a saved workspace loads unchanged', () => {
@@ -93,21 +93,29 @@ test('version 2 workspaces keep projects and named chats; untitled placeholders 
     open: ['session-0', 'session-1'], active: 'session-1', layout: 'focus', theme: 'powershell',
   };
   const { state } = store.loadState(memory({ 'ai-workbench.sessions.v2': JSON.stringify(v2) }));
-  assert.deepEqual(state.chats.map(c => [c.id, c.tool, c.title]), [['session-1', 'claude', 'Review layout'], ['session-2', 'gemini', 'New chat']]);
+  assert.deepEqual(state.chats.map(c => [c.id, c.tool, c.title]), [['session-1', 'claude', 'Review layout'], ['session-2', 'agy', 'New chat']]);
   assert.deepEqual(store.runningChatIds(state), [], 'nothing starts automatically after the upgrade');
   assert.equal(state.page, 'project-default');
   assert.equal(state.pages['project-default'].layout, 'focus');
   assert.equal(state.theme, 'powershell');
 });
 
-test('settings are checked and limited', () => {
+test('Gemini CLI chats move to Antigravity CLI and start a new conversation there', () => {
   const saved = workspace();
-  saved.settings = { fontSize: 99, dockWidth: 'wide', flash: 'yes', notifications: false, toolArgs: { codex: '-c x=1', shell: 'nope', claude: 3 } };
+  Object.assign(saved.chats[3], { tool: 'gemini' });
   const { state } = store.loadState(memory({ [store.storageKey]: JSON.stringify(saved) }));
-  assert.deepEqual(state.settings, { fontSize: 24, notifications: false, flash: true, reopenChats: true, dockWidth: 460, toolArgs: { codex: '-c x=1' } });
+  assert.deepEqual(state.chats[3], { id: 'c4', tool: 'agy', title: 'Copy', projectId: 'p2', sessionId: null });
+  assert.deepEqual(state.pinned, ['chat:c4', 'usage']);
 });
 
-test('a new chat opens on its project page; Claude and Gemini chats get a session ID', () => {
+test('settings are checked and limited', () => {
+  const saved = workspace();
+  saved.settings = { fontSize: 99, font: 'comic-sans', dockWidth: 'wide', flash: 'yes', notifications: false, toolArgs: { codex: '-c x=1', shell: 'nope', claude: 3 } };
+  const { state } = store.loadState(memory({ [store.storageKey]: JSON.stringify(saved) }));
+  assert.deepEqual(state.settings, { fontSize: 24, font: 'system', notifications: false, notifyResets: true, checkUpdates: true, flash: true, reopenChats: true, confirmRemove: true, dockWidth: 460, toolArgs: { codex: '-c x=1' } });
+});
+
+test('a new chat opens on its project page; Claude chats get a session ID', () => {
   const state = store.emptyState();
   const project = store.addProject(state, 'App', '/work/app');
   const claude = store.addChat(state, 'claude', project.id, '  Plan  ');

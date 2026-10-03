@@ -37,9 +37,20 @@
     ],
     "category": "DeveloperTool",
     "shortDescription": "Run AI coding agents side by side in your project folders",
-    "longDescription": "AI Workbench runs Claude Code, Codex, Gemini CLI and OpenCode in terminal panes, one folder per project, and picks each conversation up where it left off.",
+    "longDescription": "AI Workbench runs Claude Code, Codex, Antigravity CLI and OpenCode in terminal panes, one folder per project, and picks each conversation up where it left off.",
     "publisher": "AI Workbench contributors",
     "copyright": "Copyright © 2026 AI Workbench contributors",
     "license": "MIT"
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdDNTk0QUZDMzdGRTJFMTIKUldRU0x2NDMvRXBaZkhSYWxMTVlablJDZG9YQmY4eUlsb2NQNE5rS3pFemlpS0hEY1Nyc0RCb00K",
+      "endpoints": [
+        "https://github.com/mizland8/ai-workbench/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

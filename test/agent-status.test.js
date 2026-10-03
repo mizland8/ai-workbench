@@ -29,10 +29,10 @@ const screens = {
   opencodeStart: ['             ┃  Ask anything… "Fix a TODO in the codebase"', '             ┃  Build · Big Pickle OpenCode Zen',
     '                                 tab agents  ctrl+p commands', '  ● Tip Run /connect to add an AI provider and start coding', '  /tmp/project     1.18.34'],
   opencodePermission: ['  Permission required', '  Edit src/main.js', '  Allow once   Allow always   Reject'],
-  geminiWorking: [' ⠏ Thinking about the question (esc to cancel, 3s)', ' > Type your message or @path/to/file'],
-  geminiApproval: [' │ ? Shell ls -la │', " │ Allow execution of: 'ls'? │", ' │ ● 1. Allow once │', ' │   3. No, suggest changes (esc) │'],
-  geminiTrust: [' │ Do you trust the files in this folder? │', ' │ ● 1. Trust folder (project) │', ' │   3. Don\'t trust │'],
-  geminiIdle: [' > Type your message or @path/to/file', ' ~/project       no sandbox       gemini-3-pro'],
+  agyWorking: [' ⠏ Thinking…', ' Press esc to interrupt generation.'],
+  agyApproval: [' Run command: ls -la', ' Do you want to proceed?', ' ❯ Yes', "   Yes, and always allow 'ls' in this conversation", '   No'],
+  agyTrust: [' Antigravity requires permission to read, edit, and execute files here.', ' ❯ Yes, I trust this folder', '   No, exit'],
+  agyIdle: [' > ', ' Press ? to see keyboard shortcuts.'],
   shellQuestion: ['Overwrite settings.json? (y/n)'],
 };
 
@@ -43,7 +43,7 @@ const expected = {
   codexTrust: ['codex', 'waiting'], codexApproval: ['codex', 'waiting'],
   opencodeWorking: ['opencode', 'working'], opencodeDone: ['opencode', 'idle'], opencodeStart: ['opencode', 'idle'],
   opencodePermission: ['opencode', 'waiting'],
-  geminiWorking: ['gemini', 'working'], geminiApproval: ['gemini', 'waiting'], geminiTrust: ['gemini', 'waiting'], geminiIdle: ['gemini', 'idle'],
+  agyWorking: ['agy', 'working'], agyApproval: ['agy', 'waiting'], agyTrust: ['agy', 'waiting'], agyIdle: ['agy', 'idle'],
   shellQuestion: ['codex', 'waiting'],
 };
 
@@ -57,9 +57,9 @@ test('in a tall pane, the status line near the top still counts', () => {
 });
 
 test('questions wrapped in a narrow pane still count', () => {
-  const gemini = [' │ Do you trust the files in this     │', ' │ folder?                            │', ' │                                    │',
-    ' │ ● 1. Trust folder (ai-workbench-g… │', ' │   3. Don\'t trust                   │', ' ╰────────────────────────────────────╯', '   Press Ctrl+O to show more lines'];
-  assert.equal(detectAgentState('gemini', gemini), 'waiting');
+  const agy = [' │ Run command: npm test                │', ' │ Do you want to                       │', ' │ proceed?                             │',
+    ' │ ❯ Yes                                │', ' │   No                                 │', ' ╰──────────────────────────────────────╯'];
+  assert.equal(detectAgentState('agy', agy), 'waiting');
   assert.equal(detectAgentState('claude', [' ❯ No, exit', '   Yes, I trust this', '   folder', ' Enter to confirm · Esc to cancel']), 'waiting');
 });
 

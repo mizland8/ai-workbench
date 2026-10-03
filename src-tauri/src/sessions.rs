@@ -1,8 +1,8 @@
 //! Where each CLI keeps its conversations, so a chat reopens the conversation it had.
 //!
-//! Claude Code and Gemini CLI let us choose the session ID when a conversation starts, so we
-//! only check whether it was saved yet. Codex and OpenCode choose their own IDs, so after
-//! starting one we look for the new conversation in that folder.
+//! Claude Code lets us choose the session ID when a conversation starts, so we only check whether
+//! it was saved yet. Codex, Antigravity CLI and OpenCode choose their own IDs, so after starting
+//! one we look for the new conversation in that folder.
 
 use std::collections::HashSet;
 use std::fs;
@@ -58,32 +58,42 @@ fn claude_has_session_in(config: &Path, id: &str) -> bool {
     subdirs(&config.join("projects")).iter().any(|project| project.join(&file).is_file())
 }
 
-fn gemini_dir() -> PathBuf {
-    env::var("GEMINI_CLI_HOME").map(PathBuf::from).unwrap_or_else(env::home_dir).join(".gemini")
+pub fn agy_dir() -> PathBuf {
+    env::home_dir().join(".gemini/antigravity-cli")
 }
 
-/// Gemini CLI saves `<home>/.gemini/tmp/<project>/chats/session-<time>-<first 8 of id>.jsonl`.
-pub fn gemini_has_session(id: &str) -> bool {
-    gemini_has_session_in(&gemini_dir(), id)
+/// Antigravity CLI saves each conversation as `<dir>/conversations/<id>.db`.
+pub fn agy_has_session(id: &str) -> bool {
+    agy_has_session_in(&agy_dir(), id)
 }
 
-fn gemini_has_session_in(gemini: &Path, id: &str) -> bool {
-    let Some(short) = id.get(..8) else { return false };
-    let suffixes = [format!("-{short}.jsonl"), format!("-{short}.json")];
-    subdirs(&gemini.join("tmp")).iter().any(|project| {
-        files(&project.join("chats")).iter().any(|file| {
-            let name = file_name(file);
-            name.starts_with("session-")
-                && suffixes.iter().any(|s| name.ends_with(s.as_str()))
-                && file_starts_with_id(file, id)
+fn agy_has_session_in(agy: &Path, id: &str) -> bool {
+    is_uuid(id) && agy.join("conversations").join(format!("{id}.db")).is_file()
+}
+
+/// The Antigravity conversation started in `cwd` since `since` that no other chat has claimed.
+pub fn find_new_agy_session(cwd: &Path, since: SystemTime, claimed: &HashSet<String>) -> Option<String> {
+    find_new_agy_session_in(&agy_dir(), cwd, since, claimed)
+}
+
+/// The conversation files don't say which folder they belong to, but `cache/last_conversations.json`
+/// maps each folder to its latest conversation. That one counts if its file is new since `since`.
+fn find_new_agy_session_in(agy: &Path, cwd: &Path, since: SystemTime, claimed: &HashSet<String>) -> Option<String> {
+    let earliest = since - SLACK;
+    let text = fs::read_to_string(agy.join("cache/last_conversations.json")).ok()?;
+    let latest: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&text).ok()?;
+    latest
+        .iter()
+        .filter(|(dir, _)| same_dir(Path::new(dir.as_str()), cwd))
+        .filter_map(|(_, id)| id.as_str())
+        .find(|id| {
+            !claimed.contains(*id)
+                && agy_has_session_in(agy, id)
+                && fs::metadata(agy.join("conversations").join(format!("{id}.db")))
+                    .and_then(|meta| meta.created().or_else(|_| meta.modified()))
+                    .is_ok_and(|started| started >= earliest)
         })
-    })
-}
-
-fn file_starts_with_id(file: &Path, id: &str) -> bool {
-    let mut head = Vec::new();
-    fs::File::open(file).and_then(|f| f.take(64 * 1024).read_to_end(&mut head)).is_ok()
-        && String::from_utf8_lossy(&head).contains(id)
+        .map(String::from)
 }
 
 fn codex_dir() -> PathBuf {
@@ -195,20 +205,37 @@ mod tests {
     }
 
     #[test]
-    fn finds_saved_claude_and_gemini_sessions() {
-        let root = scratch("claude-gemini");
+    fn finds_saved_claude_sessions() {
+        let root = scratch("claude");
         assert!(!claude_has_session_in(&root, ID));
         let project = root.join("projects/-home-me-app");
         fs::create_dir_all(&project).unwrap();
         fs::write(project.join(format!("{ID}.jsonl")), "{}").unwrap();
         assert!(claude_has_session_in(&root, ID));
+        fs::remove_dir_all(root).unwrap();
+    }
 
-        let chats = root.join("tmp/app/chats");
-        fs::create_dir_all(&chats).unwrap();
-        assert!(!gemini_has_session_in(&root, ID));
-        fs::write(chats.join("session-2026-10-01T10-00-0f8e2c1a.jsonl"), format!("{{\"sessionId\":\"{ID}\"}}")).unwrap();
-        assert!(gemini_has_session_in(&root, ID));
-        assert!(!gemini_has_session_in(&root, "0f8e2c1a-0000-4000-8000-000000000000"));
+    #[test]
+    fn finds_the_new_agy_session_for_a_folder() {
+        let root = scratch("agy");
+        let work = root.join("work");
+        fs::create_dir_all(&work).unwrap();
+        fs::create_dir_all(root.join("conversations")).unwrap();
+        fs::create_dir_all(root.join("cache")).unwrap();
+        let since = SystemTime::now();
+        let none = HashSet::new();
+        assert_eq!(find_new_agy_session_in(&root, &work, since, &none), None);
+
+        fs::write(root.join(format!("conversations/{ID}.db")), "").unwrap();
+        let latest = serde_json::json!({ "/somewhere/else": "aaaaaaaa-0000-4000-8000-000000000000", work.display().to_string(): ID });
+        fs::write(root.join("cache/last_conversations.json"), latest.to_string()).unwrap();
+        assert!(agy_has_session_in(&root, ID));
+        assert!(!agy_has_session_in(&root, "aaaaaaaa-0000-4000-8000-000000000000"));
+        assert_eq!(find_new_agy_session_in(&root, &work, since, &none).as_deref(), Some(ID));
+        assert_eq!(find_new_agy_session_in(&root, &root, since, &none), None);
+        assert_eq!(find_new_agy_session_in(&root, &work, since, &HashSet::from([ID.to_string()])), None);
+        let later = SystemTime::now() + Duration::from_secs(60);
+        assert_eq!(find_new_agy_session_in(&root, &work, later, &none), None);
         fs::remove_dir_all(root).unwrap();
     }
 

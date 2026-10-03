@@ -2,8 +2,10 @@ import './styles.css';
 import * as store from './store.js';
 import * as backend from './backend.js';
 import { toolInfo, describeStatus } from './tools.js';
-import { TerminalView, isMac, monoFonts } from './terminal.js';
-import { usageTotals, formatTokens, formatLimitReset, formatLimitCountdown, headerAllowances } from './usage.js';
+import { TerminalView, isMac } from './terminal.js';
+import { THEMES, THEME_LIST, THEME_GROUPS, DEFAULT_THEME, FONT_LIST } from './themes.js';
+import { fontFamily, loadFont } from './fonts.js';
+import { usageTotals, formatTokens, formatLimitReset, formatLimitCountdown, headerAllowances, trackResets, takeDueResets } from './usage.js';
 
 const loaded = store.loadState(localStorage);
 const state = loaded.state;
@@ -16,6 +18,9 @@ let homePath = '';
 const missingFolders = new Set();
 const panes = new Map();
 let refreshToolsDialog = null;
+// The chosen font is used once its files have loaded; until then the system font stands in.
+let currentFont = fontFamily('system');
+let shownTheme = null;
 
 const $ = selector => document.querySelector(selector);
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -44,6 +49,7 @@ function renderSkeleton() {
     <header class="app-header"><strong><span class="accent">[≡]</span> AI WORKBENCH</strong><span class="header-page" id="header-page"></span>
       <button class="header-button" id="usage-button" data-action="usage" aria-haspopup="dialog" title="AI subscription allowances, reset times, and token usage"></button>
       <button class="header-button tools-button" id="tools-button" data-action="tools" title="Connect your AI tools"></button>
+      <button class="header-button update-button" id="update-button" data-action="settings" title="A new version of AI Workbench is ready to install" hidden></button>
       <button class="header-button" data-action="settings" title="Settings">settings</button></header>
     <div class="workspace"><aside class="sidebar" id="sidebar" aria-label="Projects and chats"></aside><main>
       <div class="workspace-toolbar" id="toolbar"></div>
@@ -58,8 +64,30 @@ function renderSkeleton() {
   <div class="usage-panel" id="usage-panel" role="dialog" aria-label="Usage" hidden></div>`;
 }
 
+// The app's colors come from the theme as CSS variables; light themes also switch the
+// browser's own controls (scroll bars, form fields) to their light look.
+function applyTheme() {
+  if (shownTheme === state.theme) return;
+  shownTheme = state.theme;
+  const theme = THEMES[state.theme] ?? THEMES[DEFAULT_THEME];
+  const root = document.documentElement;
+  for (const [name, value] of Object.entries(theme.ui)) root.style.setProperty(`--${name}`, value);
+  root.style.setProperty('color-scheme', theme.light ? 'light' : 'dark');
+  root.dataset.theme = theme.id;
+  root.dataset.tone = theme.light ? 'light' : 'dark';
+}
+
+async function applyFont() {
+  const wanted = state.settings.font;
+  const family = await loadFont(wanted);
+  if (state.settings.font !== wanted) return;
+  currentFont = family;
+  document.documentElement.style.setProperty('--mono', family);
+  panes.forEach(pane => pane.view.setFont(family));
+}
+
 function render() {
-  document.documentElement.dataset.theme = state.theme;
+  applyTheme();
   document.body.classList.toggle('flash-on', state.settings.flash);
   document.documentElement.style.setProperty('--dock-width', `${state.settings.dockWidth}px`);
   renderHeader();
@@ -87,10 +115,11 @@ function chatRow(c) {
   const shown = chatState(c.id);
   const pinned = store.isPinned(state, c.id);
   const selected = !pinned && page().active === c.id && store.pageKeyOf(c) === state.page;
-  return `<button class="chat-row ${selected ? 'selected' : ''}" data-action="open-chat" data-id="${escape(c.id)}" title="${escape(c.title)} · ${stateLabels[shown]} — double-click to rename">
+  return `<div class="chat-item ${selected ? 'selected' : ''}"><button class="chat-row" data-action="open-chat" data-id="${escape(c.id)}" title="${escape(c.title)} · ${stateLabels[shown]} — double-click to rename">
     ${stateMark(shown)}
     <span class="tool-tag" style="--tool:${toolInfo[c.tool].color}">${toolInfo[c.tool].tag}</span>
-    <span class="chat-title">${escape(c.title)}</span>${pinned ? '<span class="pin-mark">pinned</span>' : ''}</button>`;
+    <span class="chat-title">${escape(c.title)}</span>${pinned ? '<span class="pin-mark">pinned</span>' : ''}</button>
+    <button class="row-remove" data-action="remove-chat" data-id="${escape(c.id)}" aria-label="Remove ${escape(c.title)}" title="Remove from the list (the conversation is kept)">×</button></div>`;
 }
 
 function renderSidebar() {
@@ -177,7 +206,7 @@ function renderEmpty() {
   if (!state.projects.length && !state.chats.length) {
     const ready = tools ? store.AI_TOOLS.filter(t => tools[t]?.path).length : null;
     empty.innerHTML = `<div class="welcome"><h1>Welcome to AI Workbench</h1>
-      <p>Run Claude Code, Codex, Gemini CLI and OpenCode side by side, each working in your project folder.</p>
+      <p>Run Claude Code, Codex, Antigravity CLI and OpenCode side by side, each working in your project folder.</p>
       <ol class="steps">
         <li class="${ready ? 'done' : ''}"><span class="step">1</span><div><strong>Connect your AI tools</strong><p>${ready === null ? (backend.isDesktop ? 'Checking which tools are installed…' : backend.desktopOnly) : `${ready} of 4 installed on this computer.`}</p></div><button data-action="tools">${ready ? 'review' : 'connect'}</button></li>
         <li><span class="step">2</span><div><strong>Add a project folder</strong><p>The AI works inside this folder.</p></div><button data-action="add-project">add project</button></li>
@@ -208,6 +237,7 @@ class Pane {
     this.view = new TerminalView(this.el.querySelector('.terminal-host'), {
       theme: state.theme,
       fontSize: state.settings.fontSize,
+      fontFamily: currentFont,
       tool: chat.tool === 'shell' ? null : chat.tool,
       onFocus: () => activate(this.chatId),
       onStatus: () => { this.renderOverlay(); this.renderState(); renderSidebar(); renderTabs(); renderStatus(); },
@@ -511,12 +541,27 @@ function refreshUsage(refreshLimits = false) {
   if (!backend.isDesktop) return renderUsage();
   if (usageRequest) return usageRequest;
   usageRequest = backend.usageSummary(state.toolPaths, refreshLimits)
-    .then(report => { usage = report; usageError = ''; })
+    .then(report => { usage = report; usageError = ''; trackResets(resets, report); })
     .catch(error => { usageError = `Couldn’t read usage: ${error}`; })
     .finally(() => { usageRequest = null; renderUsage(); });
   renderUsage();
   return usageRequest;
 }
+// Allowance resets are checked every half minute, so a notification arrives close to the time
+// even though usage itself is read less often; the usage is then read again to show the new window.
+const resets = new Map();
+setInterval(() => {
+  const due = takeDueResets(resets);
+  if (!due.length) return;
+  if (state.settings.notifyResets) {
+    for (const reset of due) {
+      const label = reset.label.charAt(0).toUpperCase() + reset.label.slice(1);
+      backend.notify(`${toolInfo[reset.tool].name}: usage reset`, `${label} allowance is available again (it was ${Math.round(reset.usedPercent)}% used).`);
+    }
+  }
+  refreshUsage(true);
+}, 30_000);
+
 // Keep allowances visible in the header; refresh local totals more often while expanded.
 function watchUsage() {
   if (!backend.isDesktop) return;
@@ -573,15 +618,25 @@ function settingsDialog() {
   const toggle = (name, label, note) => `<label class="check"><input type="checkbox" name="${name}" ${s[name] ? 'checked' : ''}><span>${label}<small>${note}</small></span></label>`;
   const dialog = showDialog(`<h2>Settings</h2>
     <fieldset><legend>Appearance</legend>
-      <label class="row">Theme<select name="theme">${store.THEMES.map(t => `<option value="${t}" ${state.theme === t ? 'selected' : ''}>${{ terminal: 'Terminal', powershell: 'PowerShell', amber: 'Amber' }[t]}</option>`).join('')}</select></label>
+      <label class="row">Theme<select name="theme">${THEME_GROUPS.map(group => `<optgroup label="${group}">${THEME_LIST.filter(t => t.group === group).map(t => `<option value="${t.id}" ${state.theme === t.id ? 'selected' : ''}>${escape(t.name)}</option>`).join('')}</optgroup>`).join('')}</select></label>
+      <div class="theme-swatches" aria-hidden="true"></div>
+      <label class="row">Font<select name="font">${FONT_LIST.map(f => `<option value="${f.id}" ${s.font === f.id ? 'selected' : ''}>${escape(f.name)}</option>`).join('')}</select></label>
       <label class="row">Terminal text size<input type="number" name="fontSize" min="9" max="24" value="${s.fontSize}"></label>
     </fieldset>
-    <fieldset><legend>When an AI finishes or needs you</legend>
+    <fieldset><legend>Alerts</legend>
       ${toggle('flash', 'Flash its chat', 'The chat’s dot, tab and border flash until you look at it.')}
-      ${toggle('notifications', 'Desktop notifications', 'Only for chats you can’t see at the moment.')}
+      ${toggle('notifications', 'Desktop notifications', 'When an AI asks for approval or a choice, and when it finishes and is ready for your next prompt. Only for chats you can’t see at the moment.')}
+      ${toggle('notifyResets', 'Notify when usage resets', 'When a Claude or Codex session or weekly allowance you’ve used starts over. Antigravity CLI and OpenCode don’t report allowances.')}
     </fieldset>
     <fieldset><legend>Starting up</legend>
       ${toggle('reopenChats', 'Reopen chats from last time', 'Each one resumes its conversation.')}
+    </fieldset>
+    <fieldset><legend>Updates</legend>
+      <div class="update-status"></div>
+      ${toggle('checkUpdates', 'Check for updates when the app starts', 'Looks for a newer release on GitHub. Nothing is installed until you choose to.')}
+    </fieldset>
+    <fieldset><legend>Safeguards</legend>
+      ${toggle('confirmRemove', 'Ask before removing a chat', 'Shows “Are you sure?” when you remove a chat with × in the sidebar or “Delete chat…”.')}
     </fieldset>
     <fieldset><legend>AI tools</legend>
       <p class="dialog-note">Extra command-line options, added whenever that tool starts a chat. They apply to chats started from now on.</p>
@@ -590,11 +645,25 @@ function settingsDialog() {
     </fieldset>
     <div class="dialog-actions"><button type="submit" class="primary">done</button></div>`, { className: 'settings-dialog' });
   const form = dialog.querySelector('form');
+  refreshUpdateStatus = () => renderUpdateStatus(dialog.querySelector('.update-status'));
+  refreshUpdateStatus();
+  dialog.addEventListener('close', () => { refreshUpdateStatus = null; });
+  // A strip of the theme's terminal colors, so you can see it before closing the dialog.
+  const showSwatches = () => {
+    const t = (THEMES[state.theme] ?? THEMES[DEFAULT_THEME]).terminal;
+    dialog.querySelector('.theme-swatches').innerHTML = ['background', 'foreground', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'brightBlack']
+      .map(key => `<span style="background:${t[key]}" title="${key}"></span>`).join('');
+  };
+  showSwatches();
   form.addEventListener('input', event => {
     const field = event.target;
     if (field.name === 'theme') {
       state.theme = field.value;
       panes.forEach(pane => pane.view.setTheme(state.theme));
+      showSwatches();
+    } else if (field.name === 'font') {
+      s.font = field.value;
+      applyFont();
     } else if (field.name === 'fontSize') {
       const size = Number(field.value);
       if (size >= 9 && size <= 24) {
@@ -610,6 +679,94 @@ function settingsDialog() {
     update();
   });
 }
+
+// Updates: checked at startup (unless turned off) and from Settings. Installing replaces the app
+// and restarts it; on Linux only the AppImage can do that, other copies get a download link.
+const updates = { status: 'idle', version: '', current: '', notes: '', progress: 0, error: '', offer: null, canInstall: false };
+let refreshUpdateStatus = null;
+
+function showUpdate() {
+  const button = $('#update-button');
+  const ready = updates.status === 'available' || updates.status === 'ready';
+  button.hidden = !ready;
+  button.textContent = updates.status === 'ready' ? 'restart to update' : `update ${updates.version}`;
+  refreshUpdateStatus?.();
+}
+
+function renderUpdateStatus(box) {
+  const u = updates;
+  const version = u.current ? `Version ${escape(u.current)}` : 'AI Workbench';
+  const line = {
+    idle: version,
+    checking: `${version} · checking…`,
+    none: `${version} · up to date`,
+    available: `${version} · <span class="accent">version ${escape(u.version)} is available</span>`,
+    downloading: `${version} · downloading ${escape(u.version)}… ${u.progress ? `${Math.round(u.progress * 100)}%` : ''}`,
+    ready: `${version} · <span class="accent">${escape(u.version)} is installed; restart to use it</span>`,
+    error: `${version} · <span class="warn">${escape(u.error)}</span>`,
+  }[u.status];
+  const buttons = [];
+  if (!backend.isDesktop) buttons.push('<span class="dim">Updates work in the desktop app.</span>');
+  else if (u.status === 'available' && u.canInstall) buttons.push(`<button type="button" class="primary" data-update="install">download and install ${escape(u.version)}</button>`);
+  else if (u.status === 'available') buttons.push(`<button type="button" class="primary" data-update="download">get ${escape(u.version)} from GitHub ↗</button>`);
+  else if (u.status === 'ready') buttons.push('<button type="button" class="primary" data-update="restart">restart now</button>');
+  if (backend.isDesktop && !['checking', 'downloading', 'ready'].includes(u.status)) buttons.push('<button type="button" data-update="check">check for updates</button>');
+  const notes = u.notes && (u.status === 'available' || u.status === 'ready') ? `<p class="dialog-note update-notes">${escape(u.notes)}</p>` : '';
+  const manual = u.status === 'available' && !u.canInstall
+    ? '<p class="dialog-note">This copy can’t replace itself: download the new version, or on Linux pull the latest code and run <code>scripts/install-linux.sh</code> again.</p>' : '';
+  box.innerHTML = `<p class="update-line">${line}</p>${notes}${manual}<div class="update-actions">${buttons.join('')}</div>`;
+}
+
+async function checkUpdates({ quiet = false } = {}) {
+  if (!backend.isDesktop || updates.status === 'checking' || updates.status === 'downloading' || updates.status === 'ready') return;
+  updates.current ||= await backend.appVersion().catch(() => '');
+  Object.assign(updates, { status: 'checking', error: '' });
+  showUpdate();
+  try {
+    const [offer, canInstall] = await Promise.all([backend.checkForUpdate(), backend.canSelfUpdate()]);
+    Object.assign(updates, offer ? { status: 'available', version: offer.version, notes: offer.body ?? '', offer, canInstall } : { status: 'none', offer: null });
+    if (offer && quiet && state.settings.notifications) backend.notify('AI Workbench update available', `Version ${offer.version} is ready to install from Settings.`);
+  } catch (error) {
+    // Offline, or no release has been published yet: a startup check says nothing about it.
+    Object.assign(updates, quiet ? { status: 'idle' } : { status: 'error', error: `Couldn’t check for updates (${String(error).slice(0, 120)})` });
+  }
+  showUpdate();
+}
+
+async function installUpdate() {
+  const offer = updates.offer;
+  if (!offer) return;
+  Object.assign(updates, { status: 'downloading', progress: 0 });
+  showUpdate();
+  let total = 0, received = 0;
+  try {
+    await offer.downloadAndInstall(event => {
+      if (event.event === 'Started') total = event.data.contentLength ?? 0;
+      else if (event.event === 'Progress') { received += event.data.chunkLength; updates.progress = total ? received / total : 0; refreshUpdateStatus?.(); }
+    });
+    updates.status = 'ready';
+  } catch (error) {
+    Object.assign(updates, { status: 'error', error: `The update didn’t install (${String(error).slice(0, 120)})` });
+  }
+  showUpdate();
+}
+
+function restartForUpdate() {
+  const running = store.runningChatIds(state).length;
+  const restart = () => backend.relaunch();
+  if (!running) return restart();
+  confirmDialog({ title: 'Restart AI Workbench?',
+    body: `${plural(running, 'running chat')} will stop. ${state.settings.reopenChats ? 'They reopen and resume their conversations when the app starts again.' : 'Their conversations are kept; open them again from the sidebar.'}`,
+    confirm: 'restart now', onConfirm: restart });
+}
+
+document.addEventListener('click', event => {
+  const action = event.target.closest('[data-update]')?.dataset.update;
+  if (action === 'check') checkUpdates();
+  else if (action === 'install') installUpdate();
+  else if (action === 'restart') restartForUpdate();
+  else if (action === 'download') backend.openLink(backend.releasesUrl);
+});
 
 function projectDialog(existing = null, preset = {}) {
   const dialog = showDialog(`<h2>${existing ? 'Edit project' : 'Add a project'}</h2>
@@ -694,8 +851,13 @@ function confirmDialog({ title, body, confirm, onConfirm }) {
 function deleteChat(id) {
   const chat = chatById(id);
   if (!chat) return;
+  if (!state.settings.confirmRemove) {
+    store.removeChat(state, id);
+    update();
+    return;
+  }
   const kept = chat.tool === 'shell' ? '' : ` Its conversation stays in ${toolInfo[chat.tool].name}’s own history.`;
-  confirmDialog({ title: 'Delete chat?', body: `“${escape(chat.title)}” will be removed from AI Workbench.${kept}`,
+  confirmDialog({ title: 'Are you sure?', body: `“${escape(chat.title)}” will be removed from AI Workbench.${kept}`,
     confirm: 'delete chat', onConfirm: () => { store.removeChat(state, id); update(); } });
 }
 
@@ -723,7 +885,7 @@ function toolCard(tool) {
     : s ? `<code>${escape(s.installCommand)}</code>${needsNode ? ' <span class="warn">needs Node.js from nodejs.org</span>' : ''}` : '';
   const problem = s?.problem && s.path ? `<p class="warn">${escape(s.problem)}</p>` : '';
   const hints = {
-    gemini: 'Gemini CLI asks how to sign in the first time it starts. If Google sign-in is refused, choose “Use Gemini API Key”.',
+    agy: 'Antigravity CLI opens a Google sign-in in your browser the first time it starts.',
     opencode: 'Works with OpenCode’s free models. Sign in to use your own AI provider.',
   };
   const hint = s?.path && s.signedIn !== true && hints[tool] ? `<p class="dim">${hints[tool]}</p>` : '';
@@ -758,10 +920,10 @@ function toolsDialog() {
     const name = toolInfo[tool].name;
     box.hidden = false;
     box.querySelector('.helper-title').textContent = kind === 'install' ? `Installing ${name}: ${tools?.[tool]?.installCommand ?? ''}`
-      : tool === 'gemini' ? 'Signing in to Gemini CLI: choose a sign-in method, then type /quit' : `Signing in to ${name}`;
+      : tool === 'agy' ? 'Signing in to Antigravity CLI: finish signing in, then type /quit' : `Signing in to ${name}`;
     const host = box.querySelector('.helper-terminal');
     host.innerHTML = '';
-    const view = new TerminalView(host, { theme: state.theme, fontSize: state.settings.fontSize, onStatus: current => {
+    const view = new TerminalView(host, { theme: state.theme, fontSize: state.settings.fontSize, fontFamily: currentFont, onStatus: current => {
       if (current !== helper || (current.status !== 'exited' && current.status !== 'failed')) return;
       box.querySelector('.helper-title').textContent = current.status === 'failed' ? current.error
         : current.exitCode ? `Finished with exit code ${current.exitCode}.` : 'Finished.';
@@ -865,6 +1027,7 @@ const actions = {
   'open-chat': el => focusChat(el.dataset.id),
   'focus': el => focusChat(el.dataset.id),
   'close': el => { store.closeChat(state, el.dataset.id); update(); },
+  'remove-chat': el => deleteChat(el.dataset.id),
   'pin': el => {
     const id = el.dataset.id;
     if (store.isPinned(state, id)) store.unpinChat(state, id); else store.pinChat(state, id);
@@ -991,8 +1154,13 @@ function handleFileDrop(payload) {
   else if (sidebar && paths.length === 1) backend.pathInfo(paths[0]).then(info => info?.isDir && projectDialog(null, { path: paths[0] }));
 }
 
-document.documentElement.style.setProperty('--mono', monoFonts);
+document.documentElement.style.setProperty('--mono', currentFont);
+applyTheme();
+if (state.settings.font !== 'system') applyFont();
 renderSkeleton();
+backend.appVersion().then(version => { updates.current = version; refreshUpdateStatus?.(); }).catch(() => {});
+// Wait until the app has settled before looking online for a newer version.
+if (state.settings.checkUpdates) setTimeout(() => checkUpdates({ quiet: true }), 8000);
 window.addEventListener('focus', () => panes.get(page().active)?.seen());
 for (const area of ['#panes', '#dock']) {
   $(area).addEventListener('pointerdown', event => {

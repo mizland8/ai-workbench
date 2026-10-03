@@ -1,5 +1,7 @@
 # Push a version tag (for example `git tag v0.1.0 && git push origin v0.1.0`) to build installers
-# for every system and attach them to a draft GitHub release.
+# for every system and attach them to a draft GitHub release. The builds are signed with the
+# updater key (repository secret TAURI_SIGNING_PRIVATE_KEY), and the release gets the
+# latest.json that installed copies check. They see the update once the draft is published.
 name: Release
 
 on:
@@ -55,10 +57,13 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: AI Workbench ${{ github.ref_name }}
           releaseBody: Download the installer for your system below. These builds aren't code-signed yet; the README explains how to open them the first time.
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }}
+          includeUpdaterJson: true
+          args: --config src-tauri/tauri.release.conf.json ${{ matrix.args }}

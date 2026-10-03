@@ -51,3 +51,32 @@ export function headerAllowances(report, now = Date.now()) {
     return [{ id: tool.id, usedPercent: Math.max(...current.map(limit => limit.usedPercent)), stale: !!tool.limitsProblem }];
   });
 }
+
+// Allowance resets to announce. `tracked` maps "tool:label" to the next reset of that allowance;
+// each usage report updates it. Only resets still ahead are taken, so restarting the app or an
+// older cached report never announces one twice, and an allowance nobody used isn't announced.
+export function trackResets(tracked, report, now = Date.now()) {
+  for (const tool of report?.tools ?? []) {
+    for (const limit of tool.limits ?? []) {
+      if (!limit.resetsAt || limit.resetsAt <= now) continue;
+      const key = `${tool.id}:${limit.label}`;
+      const known = tracked.get(key);
+      // The same window can come back with a reset time a few seconds off; keep the highest use seen.
+      const sameWindow = known && Math.abs(known.resetsAt - limit.resetsAt) < 10 * 60_000;
+      tracked.set(key, { tool: tool.id, label: limit.label, resetsAt: limit.resetsAt,
+        usedPercent: Math.max(limit.usedPercent ?? 0, sameWindow ? known.usedPercent : 0) });
+    }
+  }
+  return tracked;
+}
+
+// The tracked resets whose time has come, removed from `tracked`.
+export function takeDueResets(tracked, now = Date.now()) {
+  const due = [];
+  for (const [key, reset] of tracked) {
+    if (reset.resetsAt > now) continue;
+    tracked.delete(key);
+    if (reset.usedPercent >= 1) due.push(reset);
+  }
+  return due;
+}

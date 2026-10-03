@@ -3,7 +3,7 @@
 const waitingPatterns = {
   claude: [/Do you want to /, /Yes, I trust this folder/, /No, and tell Claude what to do differently/],
   codex: [/Would you like to (run|make) the following/, /Trust and continue/],
-  gemini: [/Allow execution of/, /Apply this change\?/, /Waiting for user confirmation/, /Do you trust the files in this folder\?/],
+  agy: [/Do you want to proceed\?/, /Yes, accept this change/, /Yes, and always allow/, /Yes, I trust this folder/, /requires permission to read, edit, and execute files/],
   opencode: [/Permission required/, /Allow once/],
 };
 const yesNo = [/\(y\/n\)/i, /\[y\/N\]/, /\[Y\/n\]/];
@@ -13,7 +13,7 @@ const workingHints = [/esc to interrupt/, /esc interrupt/, /esc to cancel/];
 const spinnerAtEnd = /(?:^|[\s·•])[\u2801-\u28ff]\s*$/;
 
 export function detectAgentState(tool, lines) {
-  // Claude Code and Gemini CLI draw from the top down, so in a tall pane their status line can sit
+  // Claude Code and Antigravity CLI draw from the top down, so in a tall pane their status line can sit
   // far above the bottom row: read the last lines that have text, not the last rows of the screen.
   let end = lines.length;
   while (end > 0 && !lines[end - 1].trim()) end--;

@@ -27,7 +27,7 @@ Install and sign in to your preferred AI command-line tools separately. Their ac
 
 Follow the Windows/macOS checklist in CONTRIBUTING.md. Include a project path with spaces, conversation resume, clipboard images on Windows, notifications, and cleanup of child processes when quitting.
 
-Claude and Codex show live subscription allowances and session/weekly reset times when their account reports them. Gemini shows local CLI token totals; Antigravity (AGY) subscription quotas are not connected.
+Claude and Codex show live subscription allowances and session/weekly reset times when their account reports them. Antigravity CLI (agy) keeps no usage records on disk, so the panel points to `/usage` inside a chat; its subscription quotas are not connected.
 
 Unsigned test installers may require the operating system's allow/open-anyway flow. Test builds are not a verified production release.
 

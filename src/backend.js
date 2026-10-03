@@ -78,3 +78,27 @@ export async function onFileDrop(handler) {
   const { getCurrentWebview } = await import('@tauri-apps/api/webview');
   return getCurrentWebview().onDragDropEvent(event => handler(event.payload));
 }
+
+// Updates come from the GitHub releases (see plugins.updater in src-tauri/tauri.conf.json); each
+// one is checked against the app's signing key before it's installed.
+export const releasesUrl = 'https://github.com/mizland8/ai-workbench/releases/latest';
+
+export async function appVersion() {
+  if (!isDesktop) return '';
+  const { getVersion } = await import('@tauri-apps/api/app');
+  return getVersion();
+}
+
+// The newer version on offer, or null when this one is the latest.
+export async function checkForUpdate() {
+  if (!isDesktop) return null;
+  const { check } = await import('@tauri-apps/plugin-updater');
+  return check({ timeout: 30_000 });
+}
+
+export const canSelfUpdate = () => isDesktop ? invoke('can_self_update') : Promise.resolve(false);
+
+export async function relaunch() {
+  const { relaunch } = await import('@tauri-apps/plugin-process');
+  return relaunch();
+}

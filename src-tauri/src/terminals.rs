@@ -120,7 +120,7 @@ struct Plan {
     cwd: PathBuf,
     session_id: Option<String>,
     resumed: bool,
-    /// Look for the conversation this CLI creates (Codex and OpenCode pick their own IDs).
+    /// Look for the conversation this CLI creates (Codex, Antigravity CLI and OpenCode pick their own IDs).
     discover: Option<Tool>,
     notice: Option<String>,
 }
@@ -145,9 +145,9 @@ fn plan(request: &StartRequest) -> Result<Plan, String> {
             plan.program = tools::resolve(tool, request.tool_path.as_deref())?;
             let known = request.session_id.as_deref().map(str::trim).filter(|id| !id.is_empty()).map(String::from);
             match tool {
-                Tool::Claude | Tool::Gemini => {
+                Tool::Claude => {
                     let id = known.filter(|id| sessions::is_uuid(id)).ok_or("This chat has no session ID.")?;
-                    let saved = if tool == Tool::Claude { sessions::claude_has_session(&id) } else { sessions::gemini_has_session(&id) };
+                    let saved = sessions::claude_has_session(&id);
                     plan.args = vec![if saved { "--resume" } else { "--session-id" }.into(), id.clone()];
                     plan.session_id = Some(id);
                     plan.resumed = saved;
@@ -166,6 +166,19 @@ fn plan(request: &StartRequest) -> Result<Plan, String> {
                         }
                         plan.args = vec!["--no-daemon".into()];
                         plan.discover = Some(Tool::Codex);
+                    }
+                },
+                Tool::Agy => match known {
+                    Some(id) if sessions::agy_has_session(&id) => {
+                        plan.args = vec!["--conversation".into(), id.clone()];
+                        plan.session_id = Some(id);
+                        plan.resumed = true;
+                    }
+                    previous => {
+                        if previous.is_some() {
+                            plan.notice = Some("The previous Antigravity conversation wasn't found, so this is a new one.".into());
+                        }
+                        plan.discover = Some(Tool::Agy);
                     }
                 },
                 Tool::Opencode => match known {
@@ -297,6 +310,7 @@ fn start(terminals: &Terminals, request: StartRequest, events: Channel<InvokeRes
                 let claimed: HashSet<String> = claimed_here.lock().unwrap().union(&known).cloned().collect();
                 let found = match tool {
                     Tool::Codex => sessions::find_new_codex_session(&cwd, started_at, &claimed),
+                    Tool::Agy => sessions::find_new_agy_session(&cwd, started_at, &claimed),
                     _ => sessions::find_new_opencode_session(&program, &cwd, started_at, &claimed),
                 };
                 if let Some(session) = found {
@@ -400,6 +414,17 @@ mod tests {
     }
 
     #[test]
+    fn new_agy_chats_look_for_their_conversation() {
+        let agy = plan(&request(StartKind::Chat, Some(Tool::Agy), None)).unwrap();
+        assert!(agy.args.is_empty());
+        assert_eq!(agy.discover, Some(Tool::Agy));
+        // A Gemini CLI session ID carried over from before isn't an Antigravity conversation.
+        let carried = plan(&request(StartKind::Chat, Some(Tool::Agy), Some("not-an-agy-conversation"))).unwrap();
+        assert_eq!(carried.discover, Some(Tool::Agy));
+        assert!(carried.notice.is_some());
+    }
+
+    #[test]
     fn missing_folders_are_reported() {
         let mut req = request(StartKind::Shell, None, None);
         req.cwd = Some("/no/such/folder".into());
@@ -482,7 +507,7 @@ mod real_cli_tests {
         for tool in Tool::ALL {
             let (tx, rx) = mpsc::channel();
             let events = Channel::new(move |body| { let _ = tx.send(body); Ok(()) });
-            let session_id = matches!(tool, Tool::Claude | Tool::Gemini).then(uuid);
+            let session_id = (tool == Tool::Claude).then(uuid);
             let request = StartRequest { kind: StartKind::Chat, tool: Some(tool), session_id, known_sessions: Vec::new(),
                 cwd: Some(project.display().to_string()), tool_path: None, extra_args: Vec::new(), cols: 110, rows: 32 };
             let started = start(&terminals, request, events).unwrap_or_else(|e| panic!("{tool:?} didn't start: {e}"));

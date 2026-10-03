@@ -5,6 +5,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 import { startTerminal, writeTerminal, resizeTerminal, stopTerminal, openLink } from './backend.js';
 import { detectAgentState, AgentStatus } from './agent-status.js';
+import { THEMES, DEFAULT_THEME } from './themes.js';
 
 export const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const isWindows = /Windows/.test(navigator.userAgent);
@@ -14,17 +15,7 @@ const isWindows = /Windows/.test(navigator.userAgent);
 export const monoFonts = isMac ? "ui-monospace, Menlo, Monaco, monospace"
   : isWindows ? "'Cascadia Mono', 'Cascadia Code', Consolas, 'Courier New', monospace" : 'monospace';
 
-const palettes = {
-  terminal: { background: '#121717', foreground: '#d3ddd7', cursor: '#90cba3', cursorAccent: '#121717', selectionBackground: '#2f4d3a',
-    black: '#1c2321', red: '#e57f7f', green: '#90cba3', yellow: '#e2c77f', blue: '#86b4e0', magenta: '#c9a2e0', cyan: '#7fc8c2', white: '#d3ddd7',
-    brightBlack: '#64716b', brightRed: '#f09a9a', brightGreen: '#aee0bd', brightYellow: '#f0d99a', brightBlue: '#a6c9ef', brightMagenta: '#dcbcef', brightCyan: '#9fdcd6', brightWhite: '#f2f6f3' },
-  powershell: { background: '#012456', foreground: '#eeeeee', cursor: '#f5de84', cursorAccent: '#012456', selectionBackground: '#1d5a96',
-    black: '#0c0c0c', red: '#ff6b78', green: '#3fd13a', yellow: '#f9f1a5', blue: '#6d9bff', magenta: '#e05ad2', cyan: '#61d6d6', white: '#cccccc',
-    brightBlack: '#8a97a8', brightRed: '#ff8f99', brightGreen: '#6fe36a', brightYellow: '#fff5b8', brightBlue: '#9dbcff', brightMagenta: '#f08ae6', brightCyan: '#8ee8e8', brightWhite: '#f2f2f2' },
-  amber: { background: '#18150e', foreground: '#dbc9a6', cursor: '#e1b56c', cursorAccent: '#18150e', selectionBackground: '#4a3b22',
-    black: '#211c13', red: '#e08a6f', green: '#b8c27a', yellow: '#e1b56c', blue: '#9db0c8', magenta: '#d39fb4', cyan: '#a9c2b0', white: '#dbc9a6',
-    brightBlack: '#776a52', brightRed: '#f0a58c', brightGreen: '#cfd896', brightYellow: '#f0cb8a', brightBlue: '#b9c8da', brightMagenta: '#e4b9ca', brightCyan: '#c2d6c8', brightWhite: '#f3e6cc' },
-};
+const palette = theme => (THEMES[theme] ?? THEMES[DEFAULT_THEME]).terminal;
 
 async function copyText(text) {
   try { await navigator.clipboard.writeText(text); }
@@ -41,7 +32,7 @@ async function copyText(text) {
 // Status: idle → starting → running → exited, or failed when the CLI couldn't start.
 // For an AI tool, `agent` also tracks what the AI is doing: working, waiting for you, or idle.
 export class TerminalView {
-  constructor(host, { theme = 'terminal', fontSize = 13, tool = null, onStatus, onEvent, onFocus, onAgentState } = {}) {
+  constructor(host, { theme = DEFAULT_THEME, fontSize = 13, fontFamily = monoFonts, tool = null, onStatus, onEvent, onFocus, onAgentState } = {}) {
     this.host = host;
     this.tool = tool;
     this.id = null;
@@ -52,8 +43,8 @@ export class TerminalView {
     this.callbacks = { onStatus, onEvent, onFocus };
     this.agent = new AgentStatus((state, previous) => onAgentState?.(state, previous));
     this.term = new Terminal({
-      allowProposedApi: true, cursorBlink: true, fontFamily: monoFonts, fontSize, lineHeight: 1.1, scrollback: 10000,
-      macOptionIsMeta: true, theme: palettes[theme] ?? palettes.terminal,
+      allowProposedApi: true, cursorBlink: true, fontFamily, fontSize, lineHeight: 1.1, scrollback: 10000,
+      macOptionIsMeta: true, theme: palette(theme),
       linkHandler: { activate: (event, uri) => openLink(uri) },
     });
     this.fit = new FitAddon();
@@ -139,7 +130,7 @@ export class TerminalView {
   keyAction(e) {
     const key = e.key.toLowerCase();
     const ctrlOnly = e.ctrlKey && !e.altKey && !e.metaKey;
-    // Ctrl+J is a line break in the prompt for Claude Code, Codex, Gemini CLI and OpenCode alike.
+    // Ctrl+J is a line break in the prompt for Claude Code, Codex, Antigravity CLI and OpenCode alike.
     if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) return () => this.input('\n');
     if (e.key === 'Tab' && e.ctrlKey) return () => {};
     if (isMac) return null;
@@ -200,7 +191,13 @@ export class TerminalView {
   }
 
   setTheme(theme) {
-    this.term.options.theme = palettes[theme] ?? palettes.terminal;
+    this.term.options.theme = palette(theme);
+  }
+
+  setFont(fontFamily) {
+    if (this.term.options.fontFamily === fontFamily) return;
+    this.term.options.fontFamily = fontFamily;
+    this.scheduleFit();
   }
 
   setFontSize(size) {

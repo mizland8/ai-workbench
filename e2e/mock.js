@@ -13,7 +13,7 @@
   const bytes = text => new TextEncoder().encode(text).buffer;
   const status = id => T.toolsMissing.includes(id)
     ? { id, name: id, path: null, version: null, signedIn: null, problem: `${id} isn't installed, or isn't on your PATH.`, installCommand: `npm install -g ${id}`, installNeedsNode: true, nodeFound: true, docsUrl: `https://example.com/${id}` }
-    : { id, name: id, path: `/home/tester/.local/bin/${id}`, version: '1.2.3', signedIn: id === 'gemini' ? null : id !== 'codex', problem: null, installCommand: `npm install -g ${id}`, installNeedsNode: true, nodeFound: true, docsUrl: `https://example.com/${id}` };
+    : { id, name: id, path: `/home/tester/.local/bin/${id}`, version: '1.2.3', signedIn: id === 'agy' ? null : id !== 'codex', problem: null, installCommand: `npm install -g ${id}`, installNeedsNode: true, nodeFound: true, docsUrl: `https://example.com/${id}` };
   window.__TAURI_INTERNALS__ = {
     metadata: { currentWindow: { label: 'main' }, currentWebview: { windowLabel: 'main', label: 'main' } },
     transformCallback(cb) { const id = nextCallback++; callbacks.set(id, cb); return id; },
@@ -28,7 +28,7 @@
           const missing = args.path.includes('missing');
           return { exists: !missing, isDir: !missing && !args.path.endsWith('.txt'), name: args.path.split('/').filter(Boolean).pop() };
         }
-        case 'detect_tools': return ['claude', 'codex', 'gemini', 'opencode'].map(status);
+        case 'detect_tools': return ['claude', 'codex', 'agy', 'opencode'].map(status);
         case 'usage_summary': {
           if (T.usageFailure) throw T.usageFailure;
           const now = Date.now();
@@ -38,7 +38,7 @@
               limits: [{ label: '5-hour', usedPercent: 20, resetsAt: now + 7_200_000 }, { label: 'weekly', usedPercent: 40, resetsAt: now + 5 * 86_400_000 }] },
             { id: 'codex', buckets: recent(2000, 1000, 0, 2), plan: 'plus', problem: null, limitsUpdatedAt: now, limitsProblem: null,
               limits: [{ label: '5-hour', usedPercent: 33, resetsAt: now + 3_600_000 }, { label: 'weekly', usedPercent: 85, resetsAt: now + 3 * 86_400_000 }] },
-            { id: 'gemini', buckets: [], limits: [], plan: null, problem: null },
+            { id: 'agy', buckets: [], limits: [], plan: null, problem: null },
             { id: 'opencode', buckets: [], limits: [], plan: null, problem: "OpenCode isn't installed." },
           ].map(tool => ({ ...tool, ...T.usageOverrides[tool.id] })) };
         }
@@ -67,6 +67,13 @@
           return null;
         }
         case 'plugin:event|listen': return nextCallback++;
+        case 'plugin:app|version': return '0.1.0';
+        case 'plugin:updater|check': return T.update ?? null;
+        case 'can_self_update': return T.canSelfUpdate ?? true;
+        case 'plugin:updater|download_and_install': {
+          for (const message of [{ event: 'Started', data: { contentLength: 100 } }, { event: 'Progress', data: { chunkLength: 60 } }, { event: 'Progress', data: { chunkLength: 40 } }, { event: 'Finished' }]) send(args.onEvent, message);
+          return null;
+        }
         default: return null;
       }
     },
