@@ -6,7 +6,7 @@ A simple desktop workspace for AI coding agents. Run Claude Code, Codex, Antigra
 
 Get the installer for your system from the [latest release](../../releases/latest).
 
-- **macOS:** the `.dmg` for your Mac (Apple silicon or Intel). The builds aren't notarized yet, so macOS blocks the first launch: open **System Settings › Privacy & Security** and choose **Open Anyway**.
+- **macOS:** the `.dmg` for Apple silicon Macs (M1 and newer; Intel Macs are no longer built). The builds aren't notarized yet, so macOS blocks the first launch: open **System Settings › Privacy & Security** and choose **Open Anyway**.
 - **Windows:** the `.msi` or `-setup.exe`. SmartScreen may say the app is unrecognized: choose **More info › Run anyway**. The app uses the WebView2 runtime that comes with Windows 10 and 11.
 - **Linux:** the `.deb` (Debian, Ubuntu), the `.rpm` (Fedora, openSUSE), or the `.AppImage` (make it executable with `chmod +x`, then run it).
 
