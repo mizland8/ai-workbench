@@ -69,7 +69,7 @@
         case 'plugin:event|listen': return nextCallback++;
         case 'plugin:app|version': return '0.1.0';
         case 'plugin:updater|check': return T.update ?? null;
-        case 'can_self_update': return T.canSelfUpdate ?? true;
+        case 'update_support': return T.updateSupport ?? { canInstall: true, target: null };
         case 'plugin:updater|download_and_install': {
           for (const message of [{ event: 'Started', data: { contentLength: 100 } }, { event: 'Progress', data: { chunkLength: 60 } }, { event: 'Progress', data: { chunkLength: 40 } }, { event: 'Finished' }]) send(args.onEvent, message);
           return null;

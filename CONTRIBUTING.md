@@ -70,14 +70,24 @@ Windows is the likeliest to break, because npm installs CLIs there as `.cmd` lau
 
 Installed copies check `https://github.com/mizland8/ai-workbench/releases/latest/download/latest.json` (Settings → Updates) and install a newer version after checking its signature against the public key in `src-tauri/tauri.conf.json`.
 
-1. Raise the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` (they must match, for example `0.2.0`).
-2. Commit, then tag and push: `git tag v0.2.0 && git push origin main v0.2.0`.
-3. The Release workflow builds every system, signs the update packages, and attaches them and `latest.json` to a **draft** release.
-4. Publish the draft on GitHub. Installed copies see the update from then on.
+1. Raise the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` (they must match, for example `0.2.1`), and in the `ai-workbench` entries of `package-lock.json` and `src-tauri/Cargo.lock`.
+2. Commit, then make an annotated tag whose message says what changed, and push both: `git tag -a v0.2.1 -m "What changed" && git push origin main v0.2.1`.
+3. The Release workflow builds every system, signs the update packages, and attaches them and `latest.json` to a **draft** release. Its last job adds the plain Linux binary to `latest.json` and uses the tag's message as the notes the app shows.
+4. Check the draft: `latest.json` should list `darwin-aarch64`, `windows-x86_64`, `linux-x86_64` (with `-deb`, `-rpm` and `-appimage` entries) and `linux-x86_64-binary`. Then publish it. Installed copies see the update from then on.
 
-The workflow signs with the repository secret `TAURI_SIGNING_PRIVATE_KEY` (the contents of the private key file; `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is empty). Keep a backup of that key: without it, installed copies can't accept updates and would need reinstalling by hand. Local builds don't need the key; only release builds (`--config src-tauri/tauri.release.conf.json`) make update packages.
+The workflow signs with the repository secrets `TAURI_SIGNING_PRIVATE_KEY` (the contents of the private key file) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The key was made on 2026-10-03, replacing the one used for the Mac's 0.2.0 build, which therefore can't accept updates and needs 0.2.1 or later installed by hand once. Keep a backup of the key and its password: without them, installed copies can't accept updates and would need reinstalling by hand. Local builds don't need the key; only release builds (`--config src-tauri/tauri.release.conf.json`) make update packages.
 
-On Linux only the AppImage replaces itself. A copy built with `scripts/install-linux.sh` or installed from a .deb or .rpm is told about the update and links to the release; rebuild or reinstall it the same way.
+How each copy updates itself:
+
+| Installed from | Update |
+| --- | --- |
+| `.dmg` (macOS) | Replaces the app |
+| `.msi` or `-setup.exe` (Windows) | Runs the new installer |
+| `.deb` or `.rpm` | Installs the new package through `pkexec`, which asks for the password |
+| `.AppImage` | Replaces the AppImage file |
+| The plain Linux binary, or a build from `scripts/install-linux.sh` | Replaces the binary with the release's plain binary (`linux-x86_64-binary`) |
+
+The AppImage and the plain binary can only replace themselves in a folder the user can write to; otherwise Settings links to the release instead. `update_support` in `src-tauri/src/lib.rs` decides this.
 
 ## Reporting problems
 

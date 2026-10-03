@@ -681,7 +681,7 @@ function settingsDialog() {
 }
 
 // Updates: checked at startup (unless turned off) and from Settings. Installing replaces the app
-// and restarts it; on Linux only the AppImage can do that, other copies get a download link.
+// and restarts it. A copy that can't replace itself where it's installed gets a download link.
 const updates = { status: 'idle', version: '', current: '', notes: '', progress: 0, error: '', offer: null, canInstall: false };
 let refreshUpdateStatus = null;
 
@@ -713,7 +713,7 @@ function renderUpdateStatus(box) {
   if (backend.isDesktop && !['checking', 'downloading', 'ready'].includes(u.status)) buttons.push('<button type="button" data-update="check">check for updates</button>');
   const notes = u.notes && (u.status === 'available' || u.status === 'ready') ? `<p class="dialog-note update-notes">${escape(u.notes)}</p>` : '';
   const manual = u.status === 'available' && !u.canInstall
-    ? '<p class="dialog-note">This copy can’t replace itself: download the new version, or on Linux pull the latest code and run <code>scripts/install-linux.sh</code> again.</p>' : '';
+    ? '<p class="dialog-note">This copy can’t replace itself where it’s installed (for example, a folder you can’t write to): download the new version, or update it the way you installed it.</p>' : '';
   box.innerHTML = `<p class="update-line">${line}</p>${notes}${manual}<div class="update-actions">${buttons.join('')}</div>`;
 }
 
@@ -723,7 +723,8 @@ async function checkUpdates({ quiet = false } = {}) {
   Object.assign(updates, { status: 'checking', error: '' });
   showUpdate();
   try {
-    const [offer, canInstall] = await Promise.all([backend.checkForUpdate(), backend.canSelfUpdate()]);
+    const { canInstall, target } = await backend.updateSupport();
+    const offer = await backend.checkForUpdate(target);
     Object.assign(updates, offer ? { status: 'available', version: offer.version, notes: offer.body ?? '', offer, canInstall } : { status: 'none', offer: null });
     if (offer && quiet && state.settings.notifications) backend.notify('AI Workbench update available', `Version ${offer.version} is ready to install from Settings.`);
   } catch (error) {

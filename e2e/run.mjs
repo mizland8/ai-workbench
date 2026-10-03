@@ -286,6 +286,7 @@ try {
 
   // 12b. Updates: a newer release is offered, installed, and the app restarts after asking
   await page.eval(`__AIW_TEST__.update = { rid: 1, currentVersion: '0.1.0', version: '0.2.0', date: null, body: 'More themes', rawJson: {} };`);
+  await page.eval(`__AIW_TEST__.updateSupport = { canInstall: true, target: 'linux-x86_64-binary' };`);
   await click('[data-action=settings]');
   await wait(100);
   check('settings show the version and a check button', /Version 0\.1\.0/.test(await q(`document.querySelector('.update-status').innerText`)) && await q(`!!document.querySelector('[data-update=check]')`));
@@ -293,6 +294,7 @@ try {
   await wait(150);
   check('a newer release is offered, in settings and the header', /0\.2\.0 is available/.test(await q(`document.querySelector('.update-status').innerText`))
     && /More themes/.test(await q(`document.querySelector('.update-status').innerText`)) && await q(`!document.querySelector('#update-button').hidden`));
+  check('a plain Linux binary asks for the release’s plain binary', (await calls('plugin:updater|check')).at(-1)?.target === 'linux-x86_64-binary');
   await click('[data-update=install]');
   await wait(150);
   check('installing reports progress, then offers a restart', await q(`!!document.querySelector('[data-update=restart]')`) && /restart to update/.test(await q(`document.querySelector('#update-button').textContent`)));

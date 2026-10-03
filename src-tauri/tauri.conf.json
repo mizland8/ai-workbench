@@ -44,7 +44,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdDNTk0QUZDMzdGRTJFMTIKUldRU0x2NDMvRXBaZkhSYWxMTVlablJDZG9YQmY4eUlsb2NQNE5rS3pFemlpS0hEY1Nyc0RCb00K",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE5OUZFODJBQjZDQzc1NjAKUldSZ2RjeTJLdWlmR2F0WVBmWHh3TWFwUGhqRFZBY0IzV3JQaFZLeUV5bFZmK1I3cEhoT1dSdkQK",
       "endpoints": [
         "https://github.com/mizland8/ai-workbench/releases/latest/download/latest.json"
       ],

@@ -89,14 +89,16 @@ export async function appVersion() {
   return getVersion();
 }
 
+// Whether this copy can install updates itself, and which release file it needs when that isn't
+// the updater's own pick (a plain Linux binary takes the release's plain binary).
+export const updateSupport = () => isDesktop ? invoke('update_support') : Promise.resolve({ canInstall: false, target: null });
+
 // The newer version on offer, or null when this one is the latest.
-export async function checkForUpdate() {
+export async function checkForUpdate(target) {
   if (!isDesktop) return null;
   const { check } = await import('@tauri-apps/plugin-updater');
-  return check({ timeout: 30_000 });
+  return check({ timeout: 30_000, ...(target && { target }) });
 }
-
-export const canSelfUpdate = () => isDesktop ? invoke('can_self_update') : Promise.resolve(false);
 
 export async function relaunch() {
   const { relaunch } = await import('@tauri-apps/plugin-process');

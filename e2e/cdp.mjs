@@ -19,13 +19,19 @@ export async function launch({ port = 9333, profile, width = 1440, height = 920,
     '--no-first-run', '--no-default-browser-check', '--hide-scrollbars'];
   // CI runners often can't use Chrome's sandbox; these tests only load the local build.
   if (process.env.CI) flags.push('--no-sandbox');
-  const browser = spawn(findChrome(), [...flags, 'about:blank'], { stdio: 'ignore' });
-  let targets;
-  for (let i = 0; i < 100; i++) {
-    try { targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json(); if (targets.some(t => t.type === 'page')) break; } catch {}
-    await wait(100);
+  const browser = spawn(findChrome(), [...flags, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = '';
+  browser.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-2000); });
+  // Chrome's first start on a CI runner can take more than ten seconds.
+  let page;
+  for (const deadline = Date.now() + 60_000; !page && browser.exitCode === null && Date.now() < deadline;) {
+    try { page = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find(t => t.type === 'page'); } catch {}
+    if (!page) await wait(100);
   }
-  const page = targets.find(t => t.type === 'page');
+  if (!page) {
+    browser.kill();
+    throw new Error(`Chrome didn't open its debugging port (exit code ${browser.exitCode}).\n${stderr}`);
+  }
   const ws = new WebSocket(page.webSocketDebuggerUrl);
   await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
   let nextId = 1;

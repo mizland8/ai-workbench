@@ -1,7 +1,8 @@
-# Push a version tag (for example `git tag v0.1.0 && git push origin v0.1.0`) to build installers
-# for every system and attach them to a draft GitHub release. The builds are signed with the
-# updater key (repository secret TAURI_SIGNING_PRIVATE_KEY), and the release gets the
-# latest.json that installed copies check. They see the update once the draft is published.
+# Push a version tag (for example `git tag -a v0.2.1 -m "What changed" && git push origin v0.2.1`)
+# to build installers for every system and attach them to a draft GitHub release. The builds are
+# signed with the updater key (repository secrets TAURI_SIGNING_PRIVATE_KEY and
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD), and the release gets the latest.json that installed copies
+# check, with the tag's message as the notes they show. They see the update once the draft is published.
 name: Release
 
 on:
@@ -52,6 +53,16 @@ jobs:
 
       - run: npm ci
 
+      # Packaging writes the package's kind (.deb, .rpm, AppImage) into the app, so that it updates
+      # itself the same way. The plain binary is copied before that, for copies installed with
+      # scripts/install-linux.sh or downloaded on its own; those replace themselves with it.
+      - name: Build the plain Linux binary
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          npm run tauri build -- --no-bundle --config src-tauri/tauri.release.conf.json
+          mkdir -p "$RUNNER_TEMP/plain"
+          cp src-tauri/target/release/ai-workbench "$RUNNER_TEMP/plain/ai-workbench_${GITHUB_REF_NAME#v}_linux_x86_64"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -65,3 +76,43 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
           args: --config src-tauri/tauri.release.conf.json ${{ matrix.args }}
+
+      - name: Sign and attach the plain Linux binary
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          file="$RUNNER_TEMP/plain/ai-workbench_${GITHUB_REF_NAME#v}_linux_x86_64"
+          npx tauri signer sign --app-version "${GITHUB_REF_NAME#v}" "$file"
+          gh release upload "$GITHUB_REF_NAME" "$file" "$file.sig" --clobber
+
+  # Each build adds its own entries to latest.json. Once they're all in, this adds the plain Linux
+  # binary and the notes: the tag's message, when it is an annotated tag.
+  finish:
+    name: Finish latest.json
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - run: |
+          tag="$GITHUB_REF_NAME"
+          binary="ai-workbench_${tag#v}_linux_x86_64"
+          gh release download "$tag" --pattern latest.json --pattern "$binary.sig"
+          sha=$(gh api "repos/$GH_REPO/git/ref/tags/$tag" --jq 'select(.object.type == "tag") | .object.sha')
+          notes=$(if [ -n "$sha" ]; then gh api "repos/$GH_REPO/git/tags/$sha" --jq .message; fi)
+          jq --rawfile sig "$binary.sig" --arg url "https://github.com/$GH_REPO/releases/download/$tag/$binary" --arg notes "$notes" \
+            '.platforms["linux-x86_64-binary"] = { signature: ($sig | rtrimstr("\n")), url: $url } | .notes = $notes' \
+            latest.json > latest.json.new
+          mv latest.json.new latest.json
+          gh release upload "$tag" latest.json --clobber
+          if [ -n "$notes" ]; then
+            { printf '%s\n\n' "$notes"; gh release view "$tag" --json body --jq .body; } > body.md
+            gh release edit "$tag" --notes-file body.md
+          fi

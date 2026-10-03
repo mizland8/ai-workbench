@@ -8,7 +8,9 @@ Get the installer for your system from the [latest release](../../releases/lates
 
 - **macOS:** the `.dmg` for Apple silicon Macs (M1 and newer; Intel Macs are no longer built). The builds aren't notarized yet, so macOS blocks the first launch: open **System Settings › Privacy & Security** and choose **Open Anyway**.
 - **Windows:** the `.msi` or `-setup.exe`. SmartScreen may say the app is unrecognized: choose **More info › Run anyway**. The app uses the WebView2 runtime that comes with Windows 10 and 11.
-- **Linux:** the `.deb` (Debian, Ubuntu), the `.rpm` (Fedora, openSUSE), or the `.AppImage` (make it executable with `chmod +x`, then run it).
+- **Linux:** the `.deb` (Debian, Ubuntu), the `.rpm` (Fedora, openSUSE), or the `.AppImage` (make it executable with `chmod +x`, then run it). On other distributions, such as Arch, you can also use the plain `ai-workbench_<version>_linux_x86_64` program, which uses the system's WebKitGTK (the `webkit2gtk-4.1` package): put it in a folder you own, such as `~/.local/bin`, and make it executable.
+
+From then on the app updates itself: when a new release is out, it offers it under **Settings › Updates** and installs it when you choose to. Updates to a .deb or .rpm ask for your password, because the package manager installs them.
 
 ## Connect your AI tools
 
@@ -61,7 +63,7 @@ npm run install:linux                      # build, then install or update
 bash scripts/install-linux.sh --uninstall  # remove it again
 ```
 
-This puts the app in `~/.local/bin` with a launcher entry and icons, so it opens from your app launcher like any other app. Run it again after making changes to update the installed copy.
+This puts the app in `~/.local/bin` with a launcher entry and icons, so it opens from your app launcher like any other app. Run it again after making changes to update the installed copy. It also takes updates from the releases like a downloaded copy: installing one replaces your build with the release's plain Linux program.
 
 ## Tests
 
@@ -77,14 +79,14 @@ Every pull request and push to `main` runs the tests on Linux, macOS, and Window
 
 ## Releasing
 
-Set the new version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`, then push a tag:
+Set the new version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`, then push a tag whose message says what changed:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag -a v0.2.1 -m "What changed, in a line or two"
+git push origin main v0.2.1
 ```
 
-The release workflow builds installers for macOS, Windows, and Linux and attaches them to a draft release. Check it, then publish it.
+The release workflow builds installers for macOS, Windows, and Linux and attaches them to a draft release. Check it, then publish it. Installed copies offer the update from then on, showing the tag's message as its notes. [CONTRIBUTING.md](CONTRIBUTING.md#releasing-and-updates) has the details, including the signing key.
 
 ## Current limits
 

@@ -75,12 +75,36 @@ fn resolve() -> Env {
     let base = login_shell_env().unwrap_or_else(|| std::env::vars_os().collect());
     #[cfg(not(unix))]
     let base: Env = std::env::vars_os().collect();
+    #[cfg(target_os = "linux")]
+    let base = match std::env::var_os("APPDIR").filter(|dir| !dir.is_empty() && std::env::var_os("APPIMAGE").is_some()) {
+        Some(appdir) => without_appimage_vars(base, &appdir),
+        None => base,
+    };
 
     let shell_path = base.iter().find(|(k, _)| same_key(k, "PATH")).map(|(_, v)| v.clone());
     let mut env: Env =
         base.into_iter().filter(|(k, _)| !same_key(k, "PATH") && !is_terminal_var(k)).collect();
     env.push(("PATH".into(), merged_path(shell_path)));
     env
+}
+
+/// The AppImage's launcher points GTK at the libraries inside the AppImage (and sets its theme).
+/// Programs a CLI starts, like the browser it opens for signing in, would load those too.
+#[cfg(target_os = "linux")]
+fn without_appimage_vars(env: Env, appdir: &OsStr) -> Env {
+    use std::os::unix::ffi::OsStrExt;
+    let inside = |value: &OsStr| value.as_bytes().starts_with(appdir.as_bytes());
+    env.into_iter()
+        .filter_map(|(key, value)| match key.to_str() {
+            Some("APPIMAGE" | "APPDIR" | "ARGV0" | "OWD" | "GTK_THEME") => None,
+            Some("XDG_DATA_DIRS") => {
+                let dirs: Vec<PathBuf> = std::env::split_paths(&value).filter(|dir| !inside(dir.as_os_str())).collect();
+                (!dirs.is_empty()).then(|| (key, std::env::join_paths(dirs).unwrap_or_default()))
+            }
+            _ if inside(&value) => None,
+            _ => Some((key, value)),
+        })
+        .collect()
 }
 
 /// PATH from the shell, then this process, then the folders CLI installers use by default.
@@ -300,6 +324,29 @@ mod tests {
         let started = Instant::now();
         assert!(run_captured(slow, Duration::from_millis(200)).is_none());
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn leaves_out_what_an_appimage_launcher_sets() {
+        let mount = "/tmp/.mount_AI.WorX1y2z3";
+        let env: Env = [
+            ("APPIMAGE", "/home/u/Apps/AI.Workbench.AppImage"),
+            ("APPDIR", mount),
+            ("GTK_PATH", "/tmp/.mount_AI.WorX1y2z3//usr/lib/gtk-3.0"),
+            ("GIO_MODULE_DIR", "/tmp/.mount_AI.WorX1y2z3//usr/lib/gio/modules"),
+            ("GTK_THEME", "Adwaita:dark"),
+            ("XDG_DATA_DIRS", "/tmp/.mount_AI.WorX1y2z3/usr/share:/usr/share:/usr/local/share"),
+            ("HOME", "/home/u"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+        .collect();
+        let kept: Vec<(String, String)> = without_appimage_vars(env, OsStr::new(mount))
+            .into_iter()
+            .map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned()))
+            .collect();
+        assert_eq!(kept, [("XDG_DATA_DIRS".into(), "/usr/share:/usr/local/share".into()), ("HOME".into(), "/home/u".into())]);
     }
 
     #[test]
