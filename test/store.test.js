@@ -23,7 +23,7 @@ const workspace = () => ({
   },
   pinned: ['chat:c4', 'usage'],
   theme: 'amber', collapsed: ['p2'], toolPaths: { codex: '/opt/codex' },
-  settings: { fontSize: 15, font: 'fira-code', notifications: false, notifyResets: false, checkUpdates: false, flash: true, reopenChats: true, confirmRemove: false, dockWidth: 380, toolArgs: { codex: '--approve-for-me' } },
+  settings: { fontSize: 15, font: 'fira-code', notifications: false, notifyResets: false, checkUpdates: false, flash: true, reopenChats: true, confirmRemove: false, dockWidth: 380, toolArgs: { codex: '--approve-for-me' }, localServer: 'http://192.168.1.20:1234' },
 });
 
 test('a saved workspace loads unchanged', () => {
@@ -110,9 +110,9 @@ test('Gemini CLI chats move to Antigravity CLI and start a new conversation ther
 
 test('settings are checked and limited', () => {
   const saved = workspace();
-  saved.settings = { fontSize: 99, font: 'comic-sans', dockWidth: 'wide', flash: 'yes', notifications: false, toolArgs: { codex: '-c x=1', shell: 'nope', claude: 3 } };
+  saved.settings = { fontSize: 99, font: 'comic-sans', dockWidth: 'wide', flash: 'yes', notifications: false, toolArgs: { codex: '-c x=1', shell: 'nope', claude: 3 }, localServer: '  192.168.1.20:11434  ' };
   const { state } = store.loadState(memory({ [store.storageKey]: JSON.stringify(saved) }));
-  assert.deepEqual(state.settings, { fontSize: 24, font: 'system', notifications: false, notifyResets: true, checkUpdates: true, flash: true, reopenChats: true, confirmRemove: true, dockWidth: 460, toolArgs: { codex: '-c x=1' } });
+  assert.deepEqual(state.settings, { fontSize: 24, font: 'system', notifications: false, notifyResets: true, checkUpdates: true, flash: true, reopenChats: true, confirmRemove: true, dockWidth: 460, toolArgs: { codex: '-c x=1' }, localServer: '192.168.1.20:11434' });
 });
 
 test('a new chat opens on its project page; Claude chats get a session ID', () => {
@@ -128,6 +128,21 @@ test('a new chat opens on its project page; Claude chats get a session ID', () =
   assert.equal(shell.sessionId, null);
   assert.deepEqual(store.runningChatIds(state).sort(), [claude.id, shell.id].sort());
   assert.throws(() => store.addChat(state, 'claude', 'nope'), /Unknown project/);
+});
+
+test('a local-model chat runs in OpenCode, keeps its server and model, and is named after the model', () => {
+  const state = store.emptyState();
+  const chat = store.addChat(state, 'local', null, '', { server: 'http://192.168.1.20:1234', model: 'qwen/qwen3-coder-30b' });
+  assert.deepEqual({ ...chat, id: 'x' }, { id: 'x', tool: 'local', projectId: null, title: 'qwen3-coder-30b', sessionId: null, server: 'http://192.168.1.20:1234', model: 'qwen/qwen3-coder-30b' });
+  assert.equal(store.engineOf('local'), 'opencode');
+  assert.equal(store.engineOf('codex'), 'codex');
+  assert.equal(store.addChat(state, 'local', null, 'Refactor', { server: 'http://localhost:11434', model: 'qwen2.5-coder:7b' }).title, 'Refactor');
+  assert.throws(() => store.addChat(state, 'local', null, '', { server: 'http://localhost:11434' }), /needs a server and a model/);
+  // Saved and loaded again, it keeps both; other chats don't get them.
+  const loaded = store.normalize(JSON.parse(JSON.stringify(state)));
+  assert.equal(loaded.chats[0].model, 'qwen/qwen3-coder-30b');
+  assert.equal(loaded.chats[0].server, 'http://192.168.1.20:1234');
+  assert.ok(!('model' in store.normalize(workspace()).chats[0]));
 });
 
 test('pages keep their own open chats and layout', () => {

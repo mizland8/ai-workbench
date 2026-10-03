@@ -1,4 +1,5 @@
 mod env;
+mod local_models;
 mod sessions;
 mod terminals;
 mod tools;
@@ -92,6 +93,7 @@ pub fn run() {
             home_dir,
             update_support,
             tools::detect_tools,
+            local_models::local_models,
             usage::usage_summary,
             terminals::terminal_start,
             terminals::terminal_write,

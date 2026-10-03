@@ -261,7 +261,7 @@ fieldset > button { margin-top:4px; border-color:var(--border); font-size:11px; 
 .theme-swatches { display:flex; width:62%; height:12px; margin:-2px 0 10px auto; border:1px solid var(--border); }
 .theme-swatches span { flex:1; }
 .update-button { color:var(--accent); border-color:var(--accent); }
-.update-line { margin:4px 0 8px; }
+.update-line, .local-line { margin:4px 0 8px; }
 .update-notes { white-space:pre-wrap; max-height:120px; overflow:auto; border-left:2px solid var(--border); padding-left:8px; }
-.update-actions { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:6px; }
-.update-actions button { border-color:var(--border); }
+.update-actions, .local-actions { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:6px; }
+.update-actions button, .local-actions button { border-color:var(--border); }

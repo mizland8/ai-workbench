@@ -7,6 +7,10 @@ export const desktopOnly = 'Live sessions run in the AI Workbench desktop app.';
 export const detectTools = (toolPaths, refresh = false) =>
   isDesktop ? invoke('detect_tools', { toolPaths, refresh }) : Promise.resolve(null);
 
+// The model server at `address` (LM Studio, Ollama…; empty looks on this computer) and its models,
+// or a rejection that says what went wrong (src-tauri/src/local_models.rs).
+export const localModels = address => isDesktop ? invoke('local_models', { address }) : Promise.reject(new Error(desktopOnly));
+
 // Recent token use per AI tool, read from each tool's own records (src-tauri/src/usage.rs).
 export const usageSummary = (toolPaths, refreshLimits = false) => isDesktop ? invoke('usage_summary', { toolPaths, refreshLimits }) : Promise.resolve(null);
 

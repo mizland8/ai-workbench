@@ -238,7 +238,7 @@ class Pane {
       theme: state.theme,
       fontSize: state.settings.fontSize,
       fontFamily: currentFont,
-      tool: chat.tool === 'shell' ? null : chat.tool,
+      tool: chat.tool === 'shell' ? null : store.engineOf(chat.tool),
       onFocus: () => activate(this.chatId),
       onStatus: () => { this.renderOverlay(); this.renderState(); renderSidebar(); renderTabs(); renderStatus(); },
       onEvent: event => this.handleEvent(event),
@@ -301,6 +301,7 @@ class Pane {
     const pinned = store.isPinned(state, chat.id);
     this.el.style.setProperty('--tool', info.color);
     this.el.querySelector('.tool-tag').textContent = info.tag;
+    this.el.querySelector('.tool-tag').title = chat.tool === 'local' ? `${chat.model} on ${chat.server}, in OpenCode` : info.name;
     this.el.querySelector('.pane-title').textContent = chat.title;
     // In the dock a chat could belong to any project, so its header names it.
     this.el.querySelector('.pane-project').textContent = pinned ? `· ${projectName(chat)}` : '';
@@ -325,11 +326,15 @@ class Pane {
     store.ensureSessionId(chat);
     save();
     if (this.view.status !== 'idle') this.view.reset();
-    const shell = chat.tool === 'shell';
-    return this.view.start({ kind: shell ? 'shell' : 'chat', tool: shell ? null : chat.tool, sessionId: chat.sessionId,
+    const shell = chat.tool === 'shell', local = chat.tool === 'local';
+    const engine = store.engineOf(chat.tool);
+    // A local-model chat runs OpenCode with its own server and model, without OpenCode's extra options
+    // (a --model there would pick a different model).
+    return this.view.start({ kind: shell ? 'shell' : 'chat', tool: shell ? null : engine, sessionId: chat.sessionId,
       knownSessions: state.chats.filter(c => c.id !== chat.id && c.sessionId).map(c => c.sessionId),
-      cwd: projectPath(chat) || null, toolPath: state.toolPaths[chat.tool] ?? null,
-      extraArgs: shell ? [] : store.splitArgs(state.settings.toolArgs[chat.tool] ?? '') })
+      cwd: projectPath(chat) || null, toolPath: state.toolPaths[engine] ?? null,
+      local: local ? { server: chat.server, model: chat.model } : null,
+      extraArgs: shell || local ? [] : store.splitArgs(state.settings.toolArgs[chat.tool] ?? '') })
       .then(() => this.view.status === 'running' && this.chatId === page().active && this.visible && this.view.focus());
   }
 
@@ -613,7 +618,7 @@ function showFormError(form, message) {
   error.hidden = false;
 }
 
-function settingsDialog() {
+function settingsDialog({ focus = '' } = {}) {
   const s = state.settings;
   const toggle = (name, label, note) => `<label class="check"><input type="checkbox" name="${name}" ${s[name] ? 'checked' : ''}><span>${label}<small>${note}</small></span></label>`;
   const dialog = showDialog(`<h2>Settings</h2>
@@ -643,11 +648,23 @@ function settingsDialog() {
       ${store.AI_TOOLS.map(t => `<label class="row">${toolInfo[t].name}<input name="args-${t}" value="${escape(s.toolArgs[t] ?? '')}" placeholder="${t === 'codex' ? 'e.g. --approve-for-me' : t === 'claude' ? 'e.g. --model sonnet' : ''}" autocomplete="off" spellcheck="false"></label>`).join('')}
       <button type="button" data-action="tools">sign in, install or choose where each tool is…</button>
     </fieldset>
+    <fieldset><legend>Local models</legend>
+      <label class="row">Model server<input name="localServer" value="${escape(s.localServer)}" placeholder="this computer" autocomplete="off" spellcheck="false"></label>
+      <div class="local-status"></div>
+      <p class="dialog-note">For “Local model” chats: LM Studio, Ollama, or another server with the same OpenAI-compatible API. Leave this empty to use one on this computer, or enter another computer’s address and port, such as 192.168.1.20:1234 for LM Studio or 192.168.1.20:11434 for Ollama; that server has to accept connections from the network. The chats run in OpenCode with the model you pick.</p>
+    </fieldset>
     <div class="dialog-actions"><button type="submit" class="primary">done</button></div>`, { className: 'settings-dialog' });
   const form = dialog.querySelector('form');
   refreshUpdateStatus = () => renderUpdateStatus(dialog.querySelector('.update-status'));
   refreshUpdateStatus();
-  dialog.addEventListener('close', () => { refreshUpdateStatus = null; });
+  const showLocal = () => renderLocalStatus(dialog.querySelector('.local-status'));
+  localListeners.add(showLocal);
+  checkLocalServer();
+  showLocal();
+  let localTimer = null;
+  dialog.addEventListener('click', event => { if (event.target.closest('[data-local-check]')) checkLocalServer(); });
+  dialog.addEventListener('close', () => { refreshUpdateStatus = null; localListeners.delete(showLocal); clearTimeout(localTimer); });
+  if (focus) dialog.querySelector(`[name="${focus}"]`)?.focus();
   // A strip of the theme's terminal colors, so you can see it before closing the dialog.
   const showSwatches = () => {
     const t = (THEMES[state.theme] ?? THEMES[DEFAULT_THEME]).terminal;
@@ -673,6 +690,11 @@ function settingsDialog() {
     } else if (field.name.startsWith('args-')) {
       const tool = field.name.slice(5);
       if (field.value.trim()) s.toolArgs[tool] = field.value; else delete s.toolArgs[tool];
+    } else if (field.name === 'localServer') {
+      // Ask the new address once typing pauses.
+      s.localServer = field.value.trim();
+      clearTimeout(localTimer);
+      localTimer = setTimeout(checkLocalServer, 600);
     } else if (field.type === 'checkbox') {
       s[field.name] = field.checked;
     }
@@ -809,23 +831,83 @@ function toolChoice(tool) {
     <strong>${toolInfo[tool].name}</strong><span>${missing ? 'not installed · set up' : escape(status.text)}</span></button>`;
 }
 
+// The model server in Settings → Local models (LM Studio, Ollama…) and the models it offers. It's
+// checked whenever the new-chat dialog or the settings open, and when the address changes.
+const localServer = { status: 'idle', server: '', name: '', models: [], error: '' };
+const localListeners = new Set();
+let localCheck = 0;
+
+function checkLocalServer() {
+  if (!backend.isDesktop) return;
+  // Only the latest check counts: an earlier one may be about an address that has since changed.
+  const check = ++localCheck;
+  const latest = () => check === localCheck;
+  Object.assign(localServer, { status: 'checking', error: '' });
+  localListeners.forEach(listener => listener());
+  backend.localModels(state.settings.localServer).then(
+    found => latest() && Object.assign(localServer, { status: 'ready', server: found.server, name: found.name, models: found.models }),
+    error => latest() && Object.assign(localServer, { status: 'error', server: '', name: '', models: [], error: String(error?.message ?? error) }),
+  ).finally(() => latest() && localListeners.forEach(listener => listener()));
+}
+
+function renderLocalStatus(box) {
+  const l = localServer;
+  const line = !backend.isDesktop ? '<span class="dim">Local models work in the desktop app.</span>'
+    : l.status === 'ready' ? `<span class="accent">${escape(l.name)}</span> at ${escape(l.server)} · ${l.models.length ? `${plural(l.models.length, 'model')}: ${escape(l.models.map(store.modelLabel).join(', '))}` : 'no models loaded'}`
+    : l.status === 'error' ? `<span class="warn">${escape(l.error)}</span>`
+    : 'looking for a model server…';
+  const check = backend.isDesktop && l.status !== 'checking' ? '<div class="local-actions"><button type="button" data-local-check>check again</button></div>' : '';
+  box.innerHTML = `<p class="local-line">${line}</p>${check}`;
+}
+
+function localChoice() {
+  const l = localServer;
+  const choice = (level, text, { submit = false, action = '' } = {}) => `<button type="${submit ? 'submit' : 'button'}" name="tool" value="local" class="tool-choice is-${level}" style="--tool:${toolInfo.local.color}" ${action ? `data-action="${action}"` : ''}>
+    <strong>${toolInfo.local.name}</strong><span>${escape(text)}</span></button>`;
+  if (!backend.isDesktop) return choice('unknown', 'desktop app only');
+  if (describeStatus(tools?.opencode).level === 'missing') return choice('missing', 'needs OpenCode · set up', { action: 'tools' });
+  if (l.status === 'ready' && l.models.length) return choice('ready', `${l.name} · ${plural(l.models.length, 'model')}`, { submit: true });
+  if (l.status === 'ready') return choice('warn', `${l.name} has no models · set up`, { action: 'local-settings' });
+  if (l.status === 'error') return choice('missing', 'no model server · set up', { action: 'local-settings' });
+  return choice('unknown', 'looking for a model server…');
+}
+
 function newChatDialog(projectId) {
   const where = [`<option value="">No project (home folder)</option>`,
     ...state.projects.map(p => `<option value="${escape(p.id)}" ${p.id === projectId ? 'selected' : ''}>${escape(p.name)} — ${escape(shortPath(p.path))}</option>`)];
-  showDialog(`<h2>New chat</h2>
+  const dialog = showDialog(`<h2>New chat</h2>
     <label>Where<select name="project">${where.join('')}</select></label>
     <label>Title <span class="dim">(optional)</span><input name="title" maxlength="120" placeholder="e.g. Fix the login bug" autocomplete="off"></label>
-    <div class="tool-picker" role="group" aria-label="AI">${store.TOOLS.map(toolChoice).join('')}</div>
+    <div class="tool-picker" role="group" aria-label="AI">${store.TOOLS.map(tool => tool === 'local' ? localChoice() : toolChoice(tool)).join('')}</div>
+    <label class="local-model" hidden>Local model<select name="model"></select><small></small></label>
     <p class="dialog-note">Each chat keeps its own conversation. Close it any time; it picks up where it left off.</p>
     <div class="dialog-actions"><button type="button" data-dismiss>cancel</button></div>`, {
     className: 'new-chat',
     onSubmit: (data, form, submitter) => {
       const tool = submitter?.value;
       if (!store.TOOLS.includes(tool)) return false;
-      store.addChat(state, tool, String(data.get('project')) || null, String(data.get('title')));
+      const model = String(data.get('model') ?? '');
+      if (tool === 'local' && !(localServer.status === 'ready' && localServer.models.includes(model))) return false;
+      store.addChat(state, tool, String(data.get('project')) || null, String(data.get('title')), tool === 'local' ? { server: localServer.server, model } : null);
       update();
     },
+    onClose: () => localListeners.delete(showLocal),
   });
+  // The model list fills in once the server answers; the last model used is picked again.
+  function showLocal() {
+    dialog.querySelector('.tool-choice[value=local]').outerHTML = localChoice();
+    const row = dialog.querySelector('.local-model');
+    row.hidden = !(localServer.status === 'ready' && localServer.models.length && describeStatus(tools?.opencode).level !== 'missing');
+    if (row.hidden) return;
+    const select = row.querySelector('select');
+    const pick = select.value || state.chats.findLast(c => c.tool === 'local')?.model;
+    select.innerHTML = localServer.models.map(m => `<option value="${escape(m)}" ${m === pick ? 'selected' : ''}>${escape(m)}</option>`).join('');
+    const from = localServer.name === 'Model server' ? 'the model server' : localServer.name;
+    row.querySelector('small').textContent = `From ${from} at ${localServer.server}. The chat runs in OpenCode.`;
+  }
+  localListeners.add(showLocal);
+  showLocal();
+  checkLocalServer();
   document.querySelector('.new-chat .tool-choice:not(.is-missing)')?.focus();
 }
 
@@ -857,7 +939,7 @@ function deleteChat(id) {
     update();
     return;
   }
-  const kept = chat.tool === 'shell' ? '' : ` Its conversation stays in ${toolInfo[chat.tool].name}’s own history.`;
+  const kept = chat.tool === 'shell' ? '' : ` Its conversation stays in ${toolInfo[store.engineOf(chat.tool)].name}’s own history.`;
   confirmDialog({ title: 'Are you sure?', body: `“${escape(chat.title)}” will be removed from AI Workbench.${kept}`,
     confirm: 'delete chat', onConfirm: () => { store.removeChat(state, id); update(); } });
 }
@@ -1007,6 +1089,7 @@ async function attachFiles(id) {
 const actions = {
   'tools': () => toolsDialog(),
   'settings': () => settingsDialog(),
+  'local-settings': () => settingsDialog({ focus: 'localServer' }),
   'usage': () => toggleUsagePanel(),
   'refresh-usage': () => refreshUsage(true),
   'pin-usage': () => {

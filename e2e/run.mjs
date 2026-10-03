@@ -312,6 +312,56 @@ try {
   const restarted = (await calls('terminal_start')).at(-1).request;
   check('extra options from the settings are passed to the CLI', JSON.stringify(restarted.extraArgs) === JSON.stringify(['--approve-for-me', '-c', 'model_reasoning_effort=max']), restarted.extraArgs);
 
+  // 12c. Local models: a chat with a model from LM Studio or Ollama, on this computer or another one
+  await click('[data-action=settings]');
+  await wait(150);
+  check('settings find a model server on this computer', /LM Studio at http:\/\/127\.0\.0\.1:1234 · 2 models: qwen3-coder-30b, gemma-3-12b/.test(await q(`document.querySelector('.local-status').innerText`))
+    && (await calls('local_models')).at(-1)?.address === '');
+  await setField('args-opencode', '--model somewhere/else');
+  await setField('localServer', '192.168.1.20:1234');
+  await wait(800);
+  check('another computer’s address is asked once typing pauses', (await calls('local_models')).at(-1)?.address === '192.168.1.20:1234'
+    && /LM Studio at http:\/\/192\.168\.1\.20:1234/.test(await q(`document.querySelector('.local-status').innerText`))
+    && (await saved()).settings.localServer === '192.168.1.20:1234');
+  await page.eval(`document.querySelector('dialog [name=localServer]').scrollIntoView({ block: 'center' });`);
+  await page.shot('14c-local-models');
+  await page.eval(`document.querySelector('dialog [type=submit]').click();`);
+  await wait(100);
+  await click('#toolbar [data-action=new-chat]');
+  await wait(200);
+  check('local models need OpenCode, which runs their chats', /needs OpenCode · set up/.test(await q(`document.querySelector('.tool-choice[value=local]').innerText`))
+    && await q(`document.querySelector('dialog .local-model').hidden`));
+  await page.eval(`document.querySelector('dialog[open]').close(); __AIW_TEST__.toolsMissing = [];`);
+  await click('[data-action=tools]');
+  await wait(200);
+  await page.eval(`document.querySelector('dialog [data-dismiss].primary').click();`);
+  await wait(100);
+  await click('#toolbar [data-action=new-chat]');
+  await wait(200);
+  check('the new-chat dialog offers the server’s models', /LM Studio · 2 models/.test(await q(`document.querySelector('.tool-choice[value=local]').innerText`))
+    && await q(`!document.querySelector('dialog .local-model').hidden && document.querySelectorAll('dialog [name=model] option').length === 2`));
+  await page.shot('14d-new-local-chat');
+  await page.eval(`document.querySelector('dialog [name=model]').value = 'google/gemma-3-12b';`);
+  await click('.tool-choice[value=local]');
+  await wait(300);
+  const localChat = (await saved()).chats.find(c => c.tool === 'local');
+  const localStart = (await calls('terminal_start')).at(-1).request;
+  check('a local-model chat is named after its model and keeps its server', localChat?.title === 'gemma-3-12b' && localChat.model === 'google/gemma-3-12b' && localChat.server === 'http://192.168.1.20:1234', localChat);
+  check('it runs OpenCode with that server and model, without OpenCode’s extra options', localStart.tool === 'opencode' && localStart.local?.server === 'http://192.168.1.20:1234'
+    && localStart.local?.model === 'google/gemma-3-12b' && localStart.extraArgs.length === 0, localStart);
+  check('its pane is tagged local', await q(`${pane(localChat.id)}?.querySelector('.tool-tag').textContent`) === 'local');
+  await page.eval(`__AIW_TEST__.localFailure = "Nothing answered at http://192.168.1.20:1234. Check that the model server is running and accepts connections from this computer.";`);
+  await click('#toolbar [data-action=new-chat]');
+  await wait(200);
+  check('with no server answering, the choice leads to the settings', /no model server · set up/.test(await q(`document.querySelector('.tool-choice[value=local]').innerText`))
+    && await q(`document.querySelector('dialog .local-model').hidden`));
+  await click('.tool-choice[value=local]');
+  await wait(200);
+  check('which explain why and wait for a new address', await q(`document.activeElement?.name`) === 'localServer'
+    && /Nothing answered at http:\/\/192\.168\.1\.20:1234/.test(await q(`[...document.querySelectorAll('dialog[open]')].at(-1).querySelector('.local-status').innerText`)));
+  await page.eval(`__AIW_TEST__.localFailure = null; document.querySelectorAll('dialog[open]').forEach(d => d.close());`);
+  await wait(100);
+
   // 13. Close and reopen resumes the same conversation
   const claudeSession = (await saved()).chats.find(c => c.id === claude).sessionId;
   await page.eval(`${pane(claude)}.querySelector('[data-action=close]').click();`);
@@ -383,6 +433,7 @@ try {
   await wait(2200);
   const afterReload = (await calls('terminal_start')).map(a => a.request);
   check('reload restarts every running chat once', afterReload.length === runningCount, { started: afterReload.length, runningCount });
+  check('a local-model chat restarts with its server and model', afterReload.some(r => r.tool === 'opencode' && r.local?.model === 'google/gemma-3-12b'), afterReload.map(r => r.local));
   check('codex resumes its saved session and stays pinned', afterReload.find(r => r.tool === 'codex')?.sessionId === running.chats.find(c => c.id === codex).sessionId && await q(`${pane(codex)}.parentElement.id`) === 'dock');
   check('reload returns to the same page', (await saved()).page === running.page);
 

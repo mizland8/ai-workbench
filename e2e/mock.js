@@ -70,6 +70,11 @@
         case 'plugin:app|version': return '0.1.0';
         case 'plugin:updater|check': return T.update ?? null;
         case 'update_support': return T.updateSupport ?? { canInstall: true, target: null };
+        case 'local_models': {
+          if (T.localFailure) throw T.localFailure;
+          const server = args.address ? `http://${args.address.replace(/^https?:\/\//, '')}` : 'http://127.0.0.1:1234';
+          return { server, name: 'LM Studio', models: ['qwen/qwen3-coder-30b', 'google/gemma-3-12b'] };
+        }
         case 'plugin:updater|download_and_install': {
           for (const message of [{ event: 'Started', data: { contentLength: 100 } }, { event: 'Progress', data: { chunkLength: 60 } }, { event: 'Progress', data: { chunkLength: 40 } }, { event: 'Finished' }]) send(args.onEvent, message);
           return null;

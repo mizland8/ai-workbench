@@ -1,7 +1,11 @@
 import { THEME_LIST, FONTS, DEFAULT_FONT } from './themes.js';
 
 export const AI_TOOLS = ['claude', 'codex', 'agy', 'opencode'];
-export const TOOLS = [...AI_TOOLS, 'shell'];
+// A local-model chat talks to LM Studio, Ollama or the like, and runs in OpenCode.
+export const TOOLS = [...AI_TOOLS, 'local', 'shell'];
+export const engineOf = tool => tool === 'local' ? 'opencode' : tool;
+// `qwen/qwen3-coder-30b` reads as `qwen3-coder-30b`.
+export const modelLabel = model => String(model ?? '').split('/').pop();
 export const LAYOUTS = ['grid', 'columns', 'focus'];
 export const THEMES = THEME_LIST.map(t => t.id);
 export const WIDGETS = ['usage'];
@@ -18,7 +22,8 @@ const chosenSessionTools = ['claude'];
 const renamedTools = { gemini: 'agy' };
 
 export function defaultSettings() {
-  return { fontSize: 13, font: DEFAULT_FONT, notifications: true, notifyResets: true, checkUpdates: true, flash: true, reopenChats: true, confirmRemove: true, dockWidth: 460, toolArgs: {} };
+  // localServer: where new local-model chats look for models; empty means this computer.
+  return { fontSize: 13, font: DEFAULT_FONT, notifications: true, notifyResets: true, checkUpdates: true, flash: true, reopenChats: true, confirmRemove: true, dockWidth: 460, toolArgs: {}, localServer: '' };
 }
 
 export function emptyState() {
@@ -46,6 +51,7 @@ function normalizeSettings(value) {
   if (isObject(value.toolArgs)) {
     for (const tool of AI_TOOLS) if (isText(value.toolArgs[tool]) && value.toolArgs[tool].trim()) settings.toolArgs[tool] = value.toolArgs[tool];
   }
+  if (isText(value.localServer)) settings.localServer = value.localServer.trim().slice(0, 200);
   return settings;
 }
 
@@ -68,6 +74,7 @@ export function normalize(value) {
     const chat = { id: c.id, tool, title: isText(c.title) && c.title.trim() ? c.title : 'New chat',
       projectId: projectIds.has(c.projectId) ? c.projectId : null,
       sessionId: tool === c.tool && isText(c.sessionId) && c.sessionId ? c.sessionId : null };
+    if (tool === 'local') Object.assign(chat, { server: isText(c.server) ? c.server : '', model: isText(c.model) ? c.model : '' });
     chats.set(chat.id, chat);
     state.chats.push(chat);
   }
@@ -174,10 +181,14 @@ export function removeProject(state, id) {
   if (state.page === id) goToPage(state, state.projects[0]?.id ?? INDIVIDUAL);
 }
 
-export function addChat(state, tool, projectId, title = '') {
+// A local-model chat also takes the server and model it uses (`local`), and is named after the
+// model unless given a title.
+export function addChat(state, tool, projectId, title = '', local = null) {
   if (!TOOLS.includes(tool)) throw new Error(`Unknown tool: ${tool}`);
   if (projectId !== null && !state.projects.some(p => p.id === projectId)) throw new Error('Unknown project');
-  const chat = { id: crypto.randomUUID(), tool, projectId, title: title.trim() || 'New chat', sessionId: null };
+  if (tool === 'local' && !(local?.server && local?.model)) throw new Error('A local-model chat needs a server and a model');
+  const chat = { id: crypto.randomUUID(), tool, projectId, title: title.trim() || (tool === 'local' ? modelLabel(local.model) : '') || 'New chat', sessionId: null };
+  if (tool === 'local') Object.assign(chat, { server: local.server, model: local.model });
   ensureSessionId(chat);
   state.chats.push(chat);
   openChat(state, chat.id);

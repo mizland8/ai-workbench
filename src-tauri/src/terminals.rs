@@ -18,6 +18,7 @@ use tauri::{AppHandle, Manager, State};
 type Live = Arc<Mutex<HashMap<u32, Arc<Terminal>>>>;
 
 use crate::env;
+use crate::local_models;
 use crate::sessions;
 use crate::tools::{self, Tool};
 
@@ -101,8 +102,17 @@ pub struct StartRequest {
     /// Extra command-line options for the CLI, from the settings.
     #[serde(default)]
     extra_args: Vec<String>,
+    /// For a local-model chat (which runs in OpenCode): the model server and model it uses.
+    #[serde(default)]
+    local: Option<LocalModel>,
     cols: u16,
     rows: u16,
+}
+
+#[derive(Deserialize)]
+pub struct LocalModel {
+    server: String,
+    model: String,
 }
 
 #[derive(Serialize)]
@@ -123,6 +133,8 @@ struct Plan {
     /// Look for the conversation this CLI creates (Codex, Antigravity CLI and OpenCode pick their own IDs).
     discover: Option<Tool>,
     notice: Option<String>,
+    /// Added to the user's environment for this CLI only.
+    env: Vec<(String, String)>,
 }
 
 fn plan(request: &StartRequest) -> Result<Plan, String> {
@@ -131,7 +143,7 @@ fn plan(request: &StartRequest) -> Result<Plan, String> {
         return Err(format!("Folder not found: {}", cwd.display()));
     }
     let tool = || request.tool.ok_or_else(|| "No AI tool was chosen.".to_string());
-    let mut plan = Plan { program: PathBuf::new(), args: Vec::new(), cwd, session_id: None, resumed: false, discover: None, notice: None };
+    let mut plan = Plan { program: PathBuf::new(), args: Vec::new(), cwd, session_id: None, resumed: false, discover: None, notice: None, env: Vec::new() };
     match request.kind {
         StartKind::Shell => (plan.program, plan.args) = env::user_shell(),
         StartKind::Install => (plan.program, plan.args) = env::shell_command(tool()?.install_command()),
@@ -190,6 +202,15 @@ fn plan(request: &StartRequest) -> Result<Plan, String> {
                     None => plan.discover = Some(Tool::Opencode),
                 },
             }
+            if let (Tool::Opencode, Some(local)) = (tool, &request.local) {
+                let server = local_models::normalize_address(&local.server).ok_or("This chat's model server address isn't valid. Start a new local-model chat.")?;
+                let model = local.model.trim();
+                if model.is_empty() {
+                    return Err("This chat has no model. Start a new local-model chat.".into());
+                }
+                plan.args.extend(["-m".into(), format!("{}/{model}", local_models::PROVIDER)]);
+                plan.env.push(("OPENCODE_CONFIG_CONTENT".into(), local_models::opencode_config(&server, model)));
+            }
             plan.args.extend(request.extra_args.iter().filter(|a| !a.is_empty()).cloned());
         }
     }
@@ -229,6 +250,9 @@ fn start(terminals: &Terminals, request: StartRequest, events: Channel<InvokeRes
     cmd.cwd(&plan.cwd);
     cmd.env_clear();
     for (key, value) in env::terminal_env() {
+        cmd.env(key, value);
+    }
+    for (key, value) in &plan.env {
         cmd.env(key, value);
     }
 
@@ -381,9 +405,34 @@ mod tests {
             // Any existing file works as the CLI here; the plan never runs it.
             tool_path: Some(std::env::current_exe().unwrap().display().to_string()),
             extra_args: Vec::new(),
+            local: None,
             cols: 80,
             rows: 24,
         }
+    }
+
+    #[test]
+    fn local_model_chats_run_opencode_with_that_server_and_model() {
+        let mut req = request(StartKind::Chat, Some(Tool::Opencode), None);
+        req.local = Some(LocalModel { server: "192.168.1.20:1234".into(), model: "qwen/qwen3-coder-30b".into() });
+        let started = plan(&req).unwrap();
+        assert_eq!(started.args, ["-m", "workbench/qwen/qwen3-coder-30b"]);
+        assert_eq!(started.discover, Some(Tool::Opencode));
+        let (key, config) = &started.env[0];
+        assert_eq!(key, "OPENCODE_CONFIG_CONTENT");
+        assert!(config.contains(r#""baseURL":"http://192.168.1.20:1234/v1""#), "{config}");
+
+        // Reopening resumes its OpenCode conversation with the same model.
+        let mut again = request(StartKind::Chat, Some(Tool::Opencode), Some("ses_123"));
+        again.local = Some(LocalModel { server: "http://192.168.1.20:1234".into(), model: "qwen/qwen3-coder-30b".into() });
+        assert_eq!(plan(&again).unwrap().args, ["--session", "ses_123", "-m", "workbench/qwen/qwen3-coder-30b"]);
+
+        req.local = Some(LocalModel { server: "192.168.1.20:1234".into(), model: " ".into() });
+        assert!(plan(&req).err().unwrap().contains("no model"));
+        req.local = Some(LocalModel { server: "not an address".into(), model: "m".into() });
+        assert!(plan(&req).err().unwrap().contains("address isn't valid"));
+        // Other OpenCode chats get none of it.
+        assert!(plan(&request(StartKind::Chat, Some(Tool::Opencode), None)).unwrap().env.is_empty());
     }
 
     #[test]
@@ -509,7 +558,7 @@ mod real_cli_tests {
             let events = Channel::new(move |body| { let _ = tx.send(body); Ok(()) });
             let session_id = (tool == Tool::Claude).then(uuid);
             let request = StartRequest { kind: StartKind::Chat, tool: Some(tool), session_id, known_sessions: Vec::new(),
-                cwd: Some(project.display().to_string()), tool_path: None, extra_args: Vec::new(), cols: 110, rows: 32 };
+                cwd: Some(project.display().to_string()), tool_path: None, extra_args: Vec::new(), local: None, cols: 110, rows: 32 };
             let started = start(&terminals, request, events).unwrap_or_else(|e| panic!("{tool:?} didn't start: {e}"));
             let mut output = Vec::new();
             let early_exit = collect(&rx, &mut output, |screen| screen.lines().count() >= 6, Duration::from_secs(25));
@@ -545,7 +594,7 @@ mod real_cli_tests {
 
     fn chat(tool: Tool, session_id: Option<String>, project: &Path) -> StartRequest {
         StartRequest { kind: StartKind::Chat, tool: Some(tool), session_id, known_sessions: Vec::new(),
-            cwd: Some(project.display().to_string()), tool_path: None, extra_args: Vec::new(), cols: 110, rows: 32 }
+            cwd: Some(project.display().to_string()), tool_path: None, extra_args: Vec::new(), local: None, cols: 110, rows: 32 }
     }
 
     fn open(terminals: &Terminals, request: StartRequest) -> (Started, Receiver<InvokeResponseBody>) {

@@ -33,6 +33,7 @@ The interface is plain JavaScript with no framework; the backend is a small Rust
 | `src/backend.js` | Calls into the Rust side; does nothing in a plain browser |
 | `src-tauri/src/terminals.rs` | Starts each CLI in a pseudo-terminal and streams it to the window |
 | `src-tauri/src/tools.rs` | The supported CLIs: finding them, versions, sign-in, install commands |
+| `src-tauri/src/local_models.rs` | Local models: asks LM Studio, Ollama or another OpenAI-compatible server for its models, and writes the per-chat OpenCode settings for a local-model chat |
 | `src-tauri/src/sessions.rs` | Where each CLI saves conversations, so chats resume the right one |
 | `src-tauri/src/env.rs` | The environment CLIs run in, read from the user's login shell |
 | `src-tauri/src/usage.rs` | Reads each CLI's usage records and combines them with subscription allowances |
