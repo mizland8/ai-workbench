@@ -1,6 +1,6 @@
 {
   "name": "ai-workbench",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Run AI coding agents side by side in your project folders",
   "license": "MIT",
   "private": true,
@@ -12,7 +12,7 @@
     "dev": "vite --host 127.0.0.1 --port 1420",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test test/agent-status.test.js test/store.test.js test/themes.test.js test/usage.test.js",
+    "test": "node --test test/agent-status.test.js test/store.test.js test/themes.test.js test/usage.test.js test/delegation.test.js",
     "test:ui": "vite build && node e2e/run.mjs",
     "install:linux": "bash scripts/install-linux.sh",
     "tauri": "tauri"

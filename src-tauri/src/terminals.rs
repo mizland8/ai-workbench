@@ -92,6 +92,8 @@ pub enum StartKind {
 #[serde(rename_all = "camelCase")]
 pub struct StartRequest {
     kind: StartKind,
+    #[serde(default)]
+    chat_id: Option<String>,
     tool: Option<Tool>,
     session_id: Option<String>,
     /// Session IDs other chats already use.
@@ -241,7 +243,12 @@ fn send_event(events: &Channel<InvokeResponseBody>, event: serde_json::Value) {
     let _ = events.send(InvokeResponseBody::Json(event.to_string()));
 }
 
+#[cfg(test)]
 fn start(terminals: &Terminals, request: StartRequest, events: Channel<InvokeResponseBody>) -> Result<Started, String> {
+    start_with_bridge(terminals, request, events, None)
+}
+
+fn start_with_bridge(terminals: &Terminals, request: StartRequest, events: Channel<InvokeResponseBody>, bridge: Option<&crate::bridge::Bridge>) -> Result<Started, String> {
     let plan = plan(&request)?;
     let pty = native_pty_system()
         .openpty(PtySize { rows: request.rows.max(2), cols: request.cols.max(10), pixel_width: 0, pixel_height: 0 })
@@ -256,8 +263,21 @@ fn start(terminals: &Terminals, request: StartRequest, events: Channel<InvokeRes
         cmd.env(key, value);
     }
 
+    let id = terminals.next_id.fetch_add(1, Ordering::SeqCst) + 1;
+    if request.kind == StartKind::Chat {
+        if let (Some(bridge), Some(chat_id)) = (bridge, request.chat_id.as_ref()) {
+            let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+            let (address, token) = bridge.register(chat_id.clone(), id);
+            cmd.env("AI_WORKBENCH_BRIDGE", address);
+            cmd.env("AI_WORKBENCH_TOKEN", token);
+            cmd.env("AI_WORKBENCH_CLI", executable);
+        }
+    }
     let started_at = SystemTime::now();
-    let mut child = pty.slave.spawn_command(cmd).map_err(|e| format!("Couldn't start {}: {e}", plan.program.display()))?;
+    let mut child = pty.slave.spawn_command(cmd).map_err(|e| {
+        if let Some(bridge) = bridge { bridge.revoke(id); }
+        format!("Couldn't start {}: {e}", plan.program.display())
+    })?;
     // Our copy of the terminal's other end must close, or we never see the CLI's output end.
     drop(pty.slave);
     let mut reader = pty.master.try_clone_reader().map_err(|e| e.to_string())?;
@@ -271,7 +291,6 @@ fn start(terminals: &Terminals, request: StartRequest, events: Channel<InvokeRes
         pid: child.process_id(),
         exited: AtomicBool::new(false),
     });
-    let id = terminals.next_id.fetch_add(1, Ordering::SeqCst) + 1;
     terminals.live.lock().unwrap().insert(id, Arc::clone(&terminal));
 
     if let Some(notice) = &plan.notice {
@@ -305,12 +324,14 @@ fn start(terminals: &Terminals, request: StartRequest, events: Channel<InvokeRes
     });
 
     {
+        let bridge = bridge.cloned();
         let live = Arc::clone(&terminals.live);
         let terminal = Arc::clone(&terminal);
         let events = events.clone();
         thread::spawn(move || {
             let status = child.wait();
             terminal.exited.store(true, Ordering::SeqCst);
+            if let Some(bridge) = bridge { bridge.revoke(id); }
             // Let the reader pass on the CLI's last output before reporting the exit.
             thread::sleep(Duration::from_millis(150));
             let code = status.ok().map(|s| s.exit_code());
@@ -361,13 +382,29 @@ fn start(terminals: &Terminals, request: StartRequest, events: Channel<InvokeRes
 
 #[tauri::command]
 pub async fn terminal_start(app: AppHandle, request: StartRequest, events: Channel<InvokeResponseBody>) -> Result<Started, String> {
-    tauri::async_runtime::spawn_blocking(move || start(&app.state::<Terminals>(), request, events)).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || start_with_bridge(&app.state::<Terminals>(), request, events, Some(&app.state::<crate::bridge::Bridge>()))).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub fn terminal_write(terminals: State<'_, Terminals>, id: u32, data: String) -> Result<(), String> {
     let terminal = terminals.get(id).ok_or("This session has ended.")?;
     terminal.input.send(data.into_bytes()).map_err(|_| "This session has ended.".to_string())
+}
+
+// Paste and submit on the writer thread, preserving newlines as a single prompt.
+#[tauri::command]
+pub async fn terminal_submit_prompt(terminals: State<'_, Terminals>, id: u32, prompt: String) -> Result<(), String> {
+    let prompt = prompt.replace("\r\n", "\n");
+    if prompt.trim().is_empty() || prompt.chars().count() > 32000 || prompt.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+        return Err("Invalid delegation prompt".into());
+    }
+    let terminal = terminals.get(id).ok_or("This session has ended.")?;
+    terminal.input.send(format!("\x1b[200~{}\x1b[201~", prompt).into_bytes()).map_err(|_| "This session has ended.")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        thread::sleep(Duration::from_millis(200));
+        if terminal.exited.load(Ordering::SeqCst) { return Err("Target exited before the prompt was submitted".to_string()); }
+        terminal.input.send(vec![b'\r']).map_err(|_| "Target exited before submission".to_string())
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -380,14 +417,16 @@ pub fn terminal_resize(terminals: State<'_, Terminals>, id: u32, cols: u16, rows
 }
 
 #[tauri::command]
-pub fn terminal_stop(terminals: State<'_, Terminals>, id: u32) {
+pub fn terminal_stop(terminals: State<'_, Terminals>, bridge: State<'_, crate::bridge::Bridge>, id: u32) {
+    bridge.revoke(id);
     if let Some(terminal) = terminals.get(id) {
         terminal.stop(true);
     }
 }
 
 #[tauri::command]
-pub fn terminal_stop_all(terminals: State<'_, Terminals>) {
+pub fn terminal_stop_all(terminals: State<'_, Terminals>, bridge: State<'_, crate::bridge::Bridge>) {
+    bridge.revoke_all();
     terminals.stop_all(true);
 }
 
@@ -397,6 +436,7 @@ mod tests {
 
     fn request(kind: StartKind, tool: Option<Tool>, session_id: Option<&str>) -> StartRequest {
         StartRequest {
+            chat_id: None,
             kind,
             tool,
             session_id: session_id.map(String::from),
@@ -557,7 +597,7 @@ mod real_cli_tests {
             let (tx, rx) = mpsc::channel();
             let events = Channel::new(move |body| { let _ = tx.send(body); Ok(()) });
             let session_id = (tool == Tool::Claude).then(uuid);
-            let request = StartRequest { kind: StartKind::Chat, tool: Some(tool), session_id, known_sessions: Vec::new(),
+            let request = StartRequest { chat_id: None, kind: StartKind::Chat, tool: Some(tool), session_id, known_sessions: Vec::new(),
                 cwd: Some(project.display().to_string()), tool_path: None, extra_args: Vec::new(), local: None, cols: 110, rows: 32 };
             let started = start(&terminals, request, events).unwrap_or_else(|e| panic!("{tool:?} didn't start: {e}"));
             let mut output = Vec::new();
@@ -593,7 +633,7 @@ mod real_cli_tests {
     }
 
     fn chat(tool: Tool, session_id: Option<String>, project: &Path) -> StartRequest {
-        StartRequest { kind: StartKind::Chat, tool: Some(tool), session_id, known_sessions: Vec::new(),
+        StartRequest { chat_id: None, kind: StartKind::Chat, tool: Some(tool), session_id, known_sessions: Vec::new(),
             cwd: Some(project.display().to_string()), tool_path: None, extra_args: Vec::new(), local: None, cols: 110, rows: 32 }
     }
 

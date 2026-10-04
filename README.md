@@ -48,6 +48,27 @@ A chat can also use a model you run yourself in LM Studio, Ollama, or another se
 - **Keys.** Shift+Enter adds a new line. Ctrl+C copies selected text and otherwise interrupts, Ctrl+Shift+C always copies, and Ctrl+V pastes text (an image on the clipboard is passed to the CLI). Ctrl+Tab moves between chats on the page.
 - **Files.** Drop files onto a chat, or use "+ file" (or "Insert file paths…" in the chat's menu), to insert their paths into the prompt.
 
+## AI delegation and chat hierarchy
+
+Right-click a chat in the sidebar (or its pane header/tab) to **Rename…** or **Open AI under this chat ›**, then pick an AI and give the helper a name such as `Animations`. The helper opens below its parent and runs in the same project folder. **Move under another AI…** connects an existing chat or returns it to the top level. Removing a parent keeps its children and moves them up one level.
+
+On the parent, choose **Delegation instructions… → insert into chat**, then press Enter to give the AI the instructions. You can then say, for example: “Work on the wrestling game. Delegate animation tasks only to the chat named Animations.” Give these instructions once per conversation. Both parent and helper must be open in this version of Workbench.
+
+The AI can list connected chats, submit prompts to their existing terminals, and inspect their output. A parent can address descendants; a helper can also address its immediate parent. Names must match exactly and be unique among connected chats; IDs disambiguate duplicate names. Renaming updates routing immediately. **AI handoffs…** shows the last 100 submitted prompts during the current app session.
+
+Each live AI terminal receives a private bridge credential and the `AI_WORKBENCH_CLI` executable path. The bridge runs locally and credentials expire when the terminal closes. The AI's usual command/sandbox permissions still apply; a CLI may ask you to permit its first bridge command. On macOS/Linux, its commands are:
+
+```bash
+"$AI_WORKBENCH_CLI" bridge help
+"$AI_WORKBENCH_CLI" bridge list
+"$AI_WORKBENCH_CLI" bridge send "Animations" "Implement the grapple animation; edit only the animation files."
+"$AI_WORKBENCH_CLI" bridge read "Animations"
+```
+
+In PowerShell use `& $env:AI_WORKBENCH_CLI bridge list` and the equivalent `send`/`read` commands. For multiline prompts, `bridge send "Animations" -` reads stdin. Commands return JSON; failures return a nonzero exit code. `send` confirms submission, not task completion. `read` returns the last 250 terminal lines (up to 64,000 characters), which may include earlier replies and prompts. Helpers can report back with `bridge send` when their parent is idle, or the parent can poll their output.
+
+Handoffs are refused while a helper is working, requesting approval, at an unrecognized screen, still settling, or has manually typed input. Readiness is inferred from each CLI's terminal screen, so CLI changes can require pattern updates. Approval prompts remain for you to answer. The AIs share project files; assign separate files or tasks and have the parent review changes.
+
 ## Where things are stored
 
 - Projects, chats, layout, and theme are kept in the app's local webview storage. Browser previews and the desktop app have separate storage.

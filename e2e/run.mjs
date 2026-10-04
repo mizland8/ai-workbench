@@ -338,7 +338,7 @@ try {
   await page.eval(`document.querySelectorAll('dialog[open]').forEach(d => d.close());`);
   await wait(100);
   await page.eval(`${pane(codex)}.querySelector('[data-action=pane-menu]').click();`);
-  await page.eval(`document.querySelector('#menu [data-menu-item="2"]').click();`);
+  await page.eval(`[...document.querySelectorAll('#menu button')].find(b => b.textContent === 'Start a new conversation').click();`);
   await wait(250);
   const restarted = (await calls('terminal_start')).at(-1).request;
   check('extra options from the settings are passed to the CLI', JSON.stringify(restarted.extraArgs) === JSON.stringify(['--approve-for-me', '-c', 'model_reasoning_effort=max']), restarted.extraArgs);
@@ -418,7 +418,7 @@ try {
   await wait(100);
   check('rename updates tab, sidebar and pane', await q(`${pane(claude)}.querySelector('.pane-title').textContent === 'Renamed chat' && document.querySelector('#tabs').innerText.includes('Renamed chat')`));
   await page.eval(`${pane(claude)}.querySelector('[data-action=pane-menu]').click();`);
-  await page.eval(`document.querySelector('#menu [data-menu-item="3"]').click();`);
+  await page.eval(`[...document.querySelectorAll('#menu button')].find(b => b.textContent === 'Delete chat…').click();`);
   await wait(50);
   check('delete explains the history is kept', /stays in Claude Code’s own history/.test(await q(`document.querySelector('dialog').innerText`)));
   await page.eval(`document.querySelector('dialog [type=submit]').click();`);
@@ -484,6 +484,58 @@ try {
   await page.eval(`localStorage.clear(); localStorage.setItem('ai-workbench.sessions.v2', JSON.stringify({ projects: [{ id: 'project-default', name: 'AI Interface', path: '/home/tester/AI Interface' }], sessions: [{ id: 'session-0', provider: 'Codex', projectId: 'project-default', title: 'New chat', files: [], messages: [] }, { id: 'session-1', provider: 'Claude', projectId: 'project-default', title: 'Layout review', files: [], messages: [] }], open: ['session-0', 'session-1'], active: 'session-0', layout: 'grid', theme: 'terminal' })); location.reload();`);
   await wait(1200);
   check('version 2 data migrates without starting anything', await q(`document.querySelectorAll('.chat-row').length`) === 1 && (await calls('terminal_start')).length === 0);
+  // 20. Right-click hierarchy, named delegation, reads, and guarded sends.
+  await page.eval(`localStorage.clear(); location.reload();`);
+  await wait(1000);
+  await newChat('codex', { title: 'Wrestling Lead' });
+  const lead = await idOf('Wrestling Lead');
+  const rightClick = id => page.eval(`document.querySelector('.chat-row[data-id="${id}"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 130, clientY: 200 }));`);
+  const menuItem = label => page.eval(`const button = [...document.querySelectorAll('#menu button')].find(b => b.textContent.includes(${JSON.stringify(label)})); if (!button) throw new Error('menu missing'); button.click();`);
+  await rightClick(lead);
+  await menuItem('Open AI under');
+  await menuItem('Antigravity');
+  await page.eval(`document.querySelector('dialog [name=title]').value = 'Animations';`);
+  await click('.tool-choice[value=agy]');
+  await wait(500);
+  const helper = await idOf('Animations');
+  check('right-click opens AGY under its parent', (await saved()).chats.find(c => c.id === helper)?.parentId === lead);
+  check('child is indented in the sidebar', await q(`document.querySelector('.chat-row[data-id="${helper}"]').parentElement.style.marginLeft`) === '14px');
+  const bridge = (method, target = 'Animations', prompt = 'Implement the grapple animation') => page.eval(`return __AIW_TEST__.bridge({ source: { chatId: ${JSON.stringify(lead)}, terminalId: Object.values(__AIW_TEST__.terminals).find(t => t.request.chatId === ${JSON.stringify(lead)}).id }, method: ${JSON.stringify(method)}, target: ${JSON.stringify(target)}, prompt: ${JSON.stringify(prompt)} });`);
+  await show('agy', '> \nPress ? to see keyboard shortcuts.');
+  await wait(1900);
+  check('bridge lists the named helper', (await bridge('list')).chats[0]?.name === 'Animations');
+  const accepted = await bridge('send');
+  check('bridge submits to the existing AGY terminal', accepted.accepted === true && (await calls('terminal_submit_prompt')).at(-1)?.prompt === 'Implement the grapple animation', accepted);
+  check('bridge reads helper terminal output', (await bridge('read')).text.includes('Implement the grapple animation'));
+  await show('agy', 'Do you want to proceed?\n❯ Yes\nNo');
+  await wait(1900);
+  check('approval screen blocks delegation', !!(await bridge('send')).error);
+  await show('agy', 'Thinking…\nPress esc to interrupt generation.');
+  await wait(300);
+  check('working screen blocks delegation', !!(await bridge('send')).error);
+  await rightClick(helper);
+  await menuItem('Rename');
+  await page.eval(`document.querySelector('dialog [name=title]').value = 'Grapples'; document.querySelector('dialog [type=submit]').click();`);
+  await wait(100);
+  check('renamed helper routes by the new name', (await bridge('list')).chats[0]?.name === 'Grapples' && !!(await bridge('read', 'Animations')).error);
+  await rightClick(lead);
+  await menuItem('AI handoffs');
+  check('handoff is visible in the log', await q(`document.querySelector('dialog').textContent.includes('Wrestling Lead → Animations')`));
+  await click('dialog [data-dismiss]');
+  await page.shot('20-delegation-hierarchy');
+  await page.eval('location.reload();');
+  await wait(1700);
+  check('hierarchy and name survive reload', (await saved()).chats.find(c => c.id === helper)?.parentId === lead && (await saved()).chats.find(c => c.id === helper)?.title === 'Grapples');
+
+  await show('codex', '› Ask Codex to do anything\n? for shortcuts');
+  await wait(1900);
+  await rightClick(lead);
+  await menuItem('Delegation instructions');
+  await click('dialog [type=submit]');
+  await wait(200);
+  const setupInput = await q(`Object.values(__AIW_TEST__.terminals).find(t => t.request.chatId === ${JSON.stringify(lead)}).input.join('')`);
+  check('delegation instructions are inserted into the parent without auto-submission', setupInput.includes('Use AI Workbench') && !setupInput.includes('\r'));
+
 } catch (error) {
   check('test run completed', false, String(error.stack ?? error));
 } finally {

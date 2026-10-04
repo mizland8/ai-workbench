@@ -47,6 +47,27 @@
             { id: 'opencode', buckets: [], limits: [], plan: null, problem: "OpenCode isn't installed." },
           ].map(tool => ({ ...tool, ...T.usageOverrides[tool.id] })) };
         }
+        case 'bridge_listen': {
+          T.bridge = request => new Promise(resolve => {
+            const id = `request-${nextCallback++}`;
+            T.bridgePending ??= {};
+            T.bridgePending[id] = resolve;
+            send(args.events, { ...request, id });
+          });
+          return null;
+        }
+        case 'bridge_respond': {
+          T.bridgePending?.[args.id]?.(args.response);
+          delete T.bridgePending?.[args.id];
+          return null;
+        }
+        case 'terminal_submit_prompt': {
+          const t = T.terminals[args.id];
+          if (!t?.alive) throw new Error('This session has ended');
+          t.input.push(args.prompt, '\r');
+          t.send(args.prompt + '\r\n> ');
+          return null;
+        }
         case 'terminal_stop_all': return null;
         case 'terminal_start': {
           const request = args.request;

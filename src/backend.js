@@ -108,3 +108,17 @@ export async function relaunch() {
   const { relaunch } = await import('@tauri-apps/plugin-process');
   return relaunch();
 }
+
+// Keep the channel alive for the app's lifetime, just like each terminal's output channel.
+let delegationEvents;
+export async function listenDelegation(handler) {
+  if (!isDesktop) return;
+  delegationEvents = new Channel(async request => {
+    let response;
+    try { response = await handler(request); }
+    catch (error) { response = { error: String(error?.message ?? error) }; }
+    await invoke('bridge_respond', { id: request.id, response });
+  });
+  await invoke('bridge_listen', { events: delegationEvents });
+}
+export const submitTerminalPrompt = (id, prompt) => invoke('terminal_submit_prompt', { id, prompt });

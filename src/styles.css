@@ -265,3 +265,5 @@ fieldset > button { margin-top:4px; border-color:var(--border); font-size:11px; 
 .update-notes { white-space:pre-wrap; max-height:120px; overflow:auto; border-left:2px solid var(--border); padding-left:8px; }
 .update-actions, .local-actions { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:6px; }
 .update-actions button, .local-actions button { border-color:var(--border); }
+
+.handoff-prompt { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; }

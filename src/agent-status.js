@@ -62,3 +62,16 @@ export class AgentStatus {
     this.pending = null;
   }
 }
+
+// Absence of a spinner alone is insufficient: sign-in screens and menus can also be idle.
+export function delegationReady(tool, lines) {
+  if (detectAgentState(tool, lines) !== 'idle') return false;
+  const text = lines.join('\n');
+  if (/enter to confirm|enter.*continue|select (model|provider)|sign in|log in/i.test(text)) return false;
+  const trimmed = lines.map(line => line.trim());
+  if (tool === 'agy') return trimmed.some(line => /^>\s*$/.test(line)) && /keyboard shortcuts/i.test(text);
+  if (tool === 'claude') return trimmed.includes('❯');
+  if (tool === 'codex') return trimmed.some(line => /^›(?:\s+(?!\d+[.)])|$)/.test(line)) && /\? for shortcuts/.test(text);
+  if (tool === 'opencode') return /tab agents.*ctrl\+p commands/.test(text) && lines.some(line => /┃/.test(line));
+  return false;
+}

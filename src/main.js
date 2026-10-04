@@ -1,6 +1,7 @@
 import './styles.css';
 import * as store from './store.js';
 import * as backend from './backend.js';
+import { handleDelegation } from './delegation.js';
 import { toolInfo, describeStatus } from './tools.js';
 import { TerminalView, isMac } from './terminal.js';
 import { THEMES, THEME_LIST, THEME_GROUPS, DEFAULT_THEME, FONT_LIST } from './themes.js';
@@ -18,6 +19,7 @@ let usageError = '';
 let homePath = '';
 const missingFolders = new Set();
 const panes = new Map();
+const handoffs = [];
 let refreshToolsDialog = null;
 // The chosen font is used once its files have loaded; until then the system font stands in.
 let currentFont = fontFamily('system');
@@ -112,11 +114,11 @@ function renderHeader() {
   $('#usage-button').setAttribute('aria-expanded', String(!$('#usage-panel').hidden));
 }
 
-function chatRow(c) {
+function chatRow(c, depth = 0) {
   const shown = chatState(c.id);
   const pinned = store.isPinned(state, c.id);
   const selected = !pinned && page().active === c.id && store.pageKeyOf(c) === state.page;
-  return `<div class="chat-item ${selected ? 'selected' : ''}"><button class="chat-row" data-action="open-chat" data-id="${escape(c.id)}" title="${escape(c.title)} · ${stateLabels[shown]} — double-click to rename">
+  return `<div class="chat-item ${selected ? 'selected' : ''}" style="margin-left:${Math.min(depth, 8) * 14}px"><button class="chat-row" data-action="open-chat" data-id="${escape(c.id)}" title="${escape(c.title)} · ${stateLabels[shown]} — double-click to rename">
     ${stateMark(shown)}
     <span class="tool-tag" style="--tool:${toolInfo[c.tool].color}">${toolInfo[c.tool].tag}</span>
     <span class="chat-title">${escape(c.title)}</span>${pinned ? '<span class="pin-mark">pinned</span>' : ''}</button>
@@ -137,14 +139,14 @@ function renderSidebar() {
         <button class="icon-button" data-action="project-menu" data-id="${escape(p.id)}" title="Project options">···</button>
       </div>
       ${collapsed ? '' : `<div class="project-path" title="${escape(p.path)}">${escape(shortPath(p.path))}${missingFolders.has(p.id) ? ' <span class="warn">· folder not found</span>' : ''}</div>
-      ${chats.map(chatRow).join('') || `<button class="add-chat" data-action="new-chat" data-project="${escape(p.id)}">+ new chat</button>`}`}
+      ${store.chatTree(chats).map(({ chat, depth }) => chatRow(chat, depth)).join('') || `<button class="add-chat" data-action="new-chat" data-project="${escape(p.id)}">+ new chat</button>`}`}
     </section>`;
   }).join('');
   const standalone = state.chats.filter(c => c.projectId === null);
   sidebar.innerHTML = `<div class="section-heading"><span>PROJECTS</span><button class="icon-button" data-action="add-project" title="Add a project folder">+</button></div>
     ${projects || '<p class="sidebar-hint">Add a project folder, or drop one here.</p>'}
     <div class="section-heading standalone-heading ${state.page === store.INDIVIDUAL ? 'current' : ''}"><button class="heading-link" data-action="go-page" data-page="${store.INDIVIDUAL}">INDIVIDUAL CHATS</button><button class="icon-button" data-action="new-chat" data-project="" title="New chat without a project">+</button></div>
-    ${standalone.map(chatRow).join('') || '<p class="sidebar-hint">Chats without a project run in your home folder.</p>'}`;
+    ${store.chatTree(standalone).map(({ chat, depth }) => chatRow(chat, depth)).join('') || '<p class="sidebar-hint">Chats without a project run in your home folder.</p>'}`;
   sidebar.scrollTop = scroll;
 }
 
@@ -331,7 +333,7 @@ class Pane {
     const engine = store.engineOf(chat.tool);
     // A local-model chat runs OpenCode with its own server and model, without OpenCode's extra options
     // (a --model there would pick a different model).
-    return this.view.start({ kind: shell ? 'shell' : 'chat', tool: shell ? null : engine, sessionId: chat.sessionId,
+    return this.view.start({ kind: shell ? 'shell' : 'chat', chatId: chat.id, tool: shell ? null : engine, sessionId: chat.sessionId,
       knownSessions: state.chats.filter(c => c.id !== chat.id && c.sessionId).map(c => c.sessionId),
       cwd: projectPath(chat) || null, toolPath: state.toolPaths[engine] ?? null,
       local: local ? { server: chat.server, model: chat.model } : null,
@@ -873,15 +875,16 @@ function localChoice() {
   return choice('unknown', 'looking for a model server…');
 }
 
-function newChatDialog(projectId) {
+function newChatDialog(projectId, parentId = null, selectedTool = null) {
+  const parent = chatById(parentId);
   const where = [`<option value="">No project (home folder)</option>`,
     ...state.projects.map(p => `<option value="${escape(p.id)}" ${p.id === projectId ? 'selected' : ''}>${escape(p.name)} — ${escape(shortPath(p.path))}</option>`)];
-  const dialog = showDialog(`<h2>New chat</h2>
-    <label>Where<select name="project">${where.join('')}</select></label>
+  const dialog = showDialog(`<h2>${parent ? `Open AI under ${escape(parent.title)}` : 'New chat'}</h2>
+    <label>Where<select name="project" ${parent ? 'disabled' : ''}>${where.join('')}</select></label>
     <label>Title <span class="dim">(optional)</span><input name="title" maxlength="120" placeholder="e.g. Fix the login bug" autocomplete="off"></label>
-    <div class="tool-picker" role="group" aria-label="AI">${store.TOOLS.map(tool => tool === 'local' ? localChoice() : toolChoice(tool)).join('')}</div>
+    <div class="tool-picker" role="group" aria-label="AI">${(selectedTool ? [selectedTool] : parent ? store.DELEGATION_TOOLS : store.TOOLS).map(tool => tool === 'local' ? localChoice() : toolChoice(tool)).join('')}</div>
     <label class="local-model" hidden>Local model<select name="model"></select><small></small></label>
-    <p class="dialog-note">Each chat keeps its own conversation. Close it any time; it picks up where it left off.</p>
+    <p class="dialog-note">${parent ? 'The parent can send tasks to this AI and read its terminal output. Use a unique name, then choose “Delegation instructions…” on the parent chat.' : 'Each chat keeps its own conversation. Close it any time; it picks up where it left off.'}</p>
     <div class="dialog-actions"><button type="button" data-dismiss>cancel</button></div>`, {
     className: 'new-chat',
     onSubmit: (data, form, submitter) => {
@@ -889,14 +892,16 @@ function newChatDialog(projectId) {
       if (!store.TOOLS.includes(tool)) return false;
       const model = String(data.get('model') ?? '');
       if (tool === 'local' && !(localServer.status === 'ready' && localServer.models.includes(model))) return false;
-      store.addChat(state, tool, String(data.get('project')) || null, String(data.get('title')), tool === 'local' ? { server: localServer.server, model } : null);
+      store.addChat(state, tool, parent ? parent.projectId : String(data.get('project')) || null, String(data.get('title')), tool === 'local' ? { server: localServer.server, model } : null, parentId);
       update();
     },
     onClose: () => localListeners.delete(showLocal),
   });
   // The model list fills in once the server answers; the last model used is picked again.
   function showLocal() {
-    dialog.querySelector('.tool-choice[value=local]').outerHTML = localChoice();
+    const localButton = dialog.querySelector('.tool-choice[value=local]');
+    if (!localButton) return;
+    localButton.outerHTML = localChoice();
     const row = dialog.querySelector('.local-model');
     row.hidden = !(localServer.status === 'ready' && localServer.models.length && describeStatus(tools?.opencode).level !== 'missing');
     if (row.hidden) return;
@@ -1096,6 +1101,53 @@ function showMenu(anchor, items) {
   menu.querySelector('button')?.focus();
 }
 
+function chatMenu(el) {
+  const chat = chatById(el.dataset.id);
+  if (!chat) return;
+  const aiItems = chat.tool === 'shell' ? [] : [
+    ['Open AI under this chat ›', () => showMenu(el, store.DELEGATION_TOOLS.map(tool => [escape(toolInfo[tool].name), () => newChatDialog(chat.projectId, chat.id, tool)]))],
+    ['Move under another AI…', () => parentDialog(chat.id)],
+    ['Delegation instructions…', () => delegationDialog(chat.id)],
+    ['AI handoffs…', () => handoffDialog()],
+  ];
+  showMenu(el, [
+    ['Rename…', () => renameDialog(chat.id)], ...aiItems,
+    ['Insert file paths…', () => attachFiles(chat.id)],
+    [chat.tool === 'shell' ? 'Restart terminal' : 'Start a new conversation', () => panes.get(chat.id)?.start({ fresh: chat.tool !== 'shell' })],
+    ['Delete chat…', () => deleteChat(chat.id), true],
+  ]);
+}
+
+function parentDialog(id) {
+  const chat = chatById(id);
+  const descendants = new Set(store.chatTree(state.chats, id).map(({ chat }) => chat.id));
+  const candidates = state.chats.filter(c => c.id !== id && !descendants.has(c.id) && c.projectId === chat.projectId && store.DELEGATION_TOOLS.includes(c.tool));
+  showDialog(`<h2>Move ${escape(chat.title)}</h2><label>Parent AI<select name="parent"><option value="">None (top level)</option>${candidates.map(c => `<option value="${escape(c.id)}" ${c.id === chat.parentId ? 'selected' : ''}>${escape(c.title)} · ${escape(toolInfo[c.tool].name)}</option>`).join('')}</select></label>
+    <p class="dialog-note">The parent and its ancestors can delegate tasks to this chat. This chat can send replies to its parent.</p>
+    <div class="dialog-actions"><button type="button" data-dismiss>cancel</button><button type="submit" class="primary">move</button></div>`, {
+    onSubmit: data => { chat.parentId = String(data.get('parent')) || null; update(); },
+  });
+}
+
+function delegationDialog(id) {
+  const instructions = 'Use AI Workbench to delegate tasks when appropriate. First run the executable named by the AI_WORKBENCH_CLI environment variable with arguments "bridge help", then "bridge list". On macOS/Linux: "$AI_WORKBENCH_CLI" bridge help. On Windows PowerShell: & $env:AI_WORKBENCH_CLI bridge help. Address only the connected chat names or IDs I authorize. Send tasks with bridge send and inspect results with bridge read. Coordinate file ownership and review changes. Never answer another AI’s approval prompts. Do not print or share AI_WORKBENCH_TOKEN.';
+  showDialog(`<h2>AI delegation</h2><p class="dialog-note">Right-click a chat → Open AI under this chat to connect a helper, or move an existing AI under this one. Give the parent these instructions once per conversation, then tell it which helpers to use.</p>
+    <p class="form-error" hidden></p><label>Instructions<textarea rows="8" readonly>${escape(instructions)}</textarea></label>
+    <p class="dialog-note">Insert these into the chat, then press Enter to send. After that you can say: “Delegate animation work only to the chat named Animations.”</p>
+    <div class="dialog-actions"><button type="button" data-dismiss>close</button><button type="submit" class="primary">insert into chat</button></div>`, {
+    onSubmit: (_, form) => {
+      const pane = panes.get(id);
+      const problem = pane ? pane.view.promptProblem() : 'Open this chat before inserting delegation instructions.';
+      if (problem) { showFormError(form, problem); return false; }
+      requestAnimationFrame(() => { focusChat(id); pane.view.paste(instructions); });
+    },
+  });
+}
+
+function handoffDialog() {
+  showDialog(`<h2>AI handoffs</h2><p class="dialog-note">Prompts submitted during this app session.</p>${handoffs.length ? handoffs.slice().reverse().map(h => `<details><summary>${escape(h.from)} → ${escape(h.to)} · ${escape(new Date(h.at).toLocaleTimeString())}</summary><pre class="handoff-prompt">${escape(h.prompt)}</pre></details>`).join('') : '<p>No tasks have been sent yet.</p>'}<div class="dialog-actions"><button type="button" data-dismiss>close</button></div>`);
+}
+
 async function attachFiles(id) {
   const pane = panes.get(id);
   const paths = await backend.pickFiles(projectPath(chatById(id)) || homePath);
@@ -1139,16 +1191,7 @@ const actions = {
   'jump': el => { const id = store.runningChatIds(state).find(id => chatState(id) === el.dataset.state); if (id) focusChat(id); },
   'resume': el => panes.get(el.dataset.id)?.start(),
   'new-conversation': el => panes.get(el.dataset.id)?.start({ fresh: true }),
-  'pane-menu': el => {
-    const chat = chatById(el.dataset.id);
-    if (!chat) return;
-    showMenu(el, [
-      ['Rename…', () => renameDialog(chat.id)],
-      ['Insert file paths…', () => attachFiles(chat.id)],
-      [chat.tool === 'shell' ? 'Restart terminal' : 'Start a new conversation', () => panes.get(chat.id)?.start({ fresh: chat.tool !== 'shell' })],
-      ['Delete chat…', () => deleteChat(chat.id), true],
-    ]);
-  },
+  'pane-menu': el => chatMenu(el),
 };
 
 document.addEventListener('click', event => {
@@ -1158,6 +1201,15 @@ document.addEventListener('click', event => {
   const target = event.target.closest('[data-action]');
   if (target && actions[target.dataset.action]) actions[target.dataset.action](target, event);
   if (!panel.hidden && !insideUsage) toggleUsagePanel(false);
+});
+
+document.addEventListener('contextmenu', event => {
+  const target = event.target.closest('.chat-row, .pane-header, .open-tab');
+  if (!target) return;
+  const id = target.dataset.id ?? target.closest('[data-pane]')?.dataset.pane ?? target.querySelector('[data-id]')?.dataset.id;
+  if (!id) return;
+  event.preventDefault();
+  chatMenu({ dataset: { id }, getBoundingClientRect: () => ({ bottom: event.clientY, right: event.clientX }) });
 });
 
 document.addEventListener('dblclick', event => {
@@ -1274,7 +1326,12 @@ for (const area of ['#panes', '#dock']) {
   }, true);
 }
 $('#dock-resizer').addEventListener('pointerdown', event => { event.preventDefault(); startDockResize(event); });
-backend.resetTerminals().finally(() => {
+backend.resetTerminals().then(() => backend.listenDelegation(request => handleDelegation(state, panes, request, handoff => {
+  handoffs.push(handoff);
+  if (handoffs.length > 100) handoffs.shift();
+  notice = `AI handoff: ${handoff.from} → ${handoff.to}`;
+  renderStatus();
+}))).catch(error => { notice = `AI delegation unavailable: ${error}`; }).finally(() => {
   render();
   watchUsage();
   backend.homeDir().then(path => { homePath = path; render(); });

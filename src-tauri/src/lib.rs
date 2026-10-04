@@ -1,3 +1,4 @@
+pub mod bridge;
 mod env;
 mod local_models;
 mod sessions;
@@ -83,12 +84,15 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(terminals::Terminals::default())
-        .setup(|_| {
+        .setup(|app| {
+            app.manage(bridge::Bridge::new()?);
             // Reading the login shell's environment takes a moment; start before the first chat needs it.
             std::thread::spawn(env::user_env);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            bridge::bridge_listen,
+            bridge::bridge_respond,
             path_info,
             home_dir,
             update_support,
@@ -97,6 +101,7 @@ pub fn run() {
             usage::usage_summary,
             terminals::terminal_start,
             terminals::terminal_write,
+            terminals::terminal_submit_prompt,
             terminals::terminal_resize,
             terminals::terminal_stop,
             terminals::terminal_stop_all,

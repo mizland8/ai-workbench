@@ -3,8 +3,8 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
-import { startTerminal, writeTerminal, resizeTerminal, stopTerminal, openLink } from './backend.js';
-import { detectAgentState, AgentStatus } from './agent-status.js';
+import { startTerminal, writeTerminal, resizeTerminal, stopTerminal, openLink, submitTerminalPrompt } from './backend.js';
+import { detectAgentState, delegationReady, AgentStatus } from './agent-status.js';
 import { THEMES, DEFAULT_THEME } from './themes.js';
 
 export const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
@@ -38,6 +38,10 @@ export class TerminalView {
     this.id = null;
     this.status = 'idle';
     this.error = '';
+    this.lastInputAt = 0;
+    this.lastOutputAt = 0;
+    this.hasDraft = false;
+    this.submitting = false;
     this.exitCode = null;
     this.generation = 0;
     this.callbacks = { onStatus, onEvent, onFocus };
@@ -73,13 +77,17 @@ export class TerminalView {
     this.error = '';
     this.exitCode = null;
     this.agent.reset();
+    this.lastInputAt = Date.now();
+    this.lastOutputAt = 0;
+    this.hasDraft = false;
+    this.submitting = false;
     this.setStatus('starting');
     this.fitNow();
     const { cols, rows } = this.term;
     const current = () => generation === this.generation;
     try {
       const started = await startTerminal({ ...request, cols, rows },
-        bytes => current() && this.term.write(bytes),
+        bytes => { if (current()) { this.lastOutputAt = Date.now(); this.term.write(bytes); } },
         event => current() && this.handleEvent(event));
       if (!current()) { stopTerminal(started.id); return null; }
       this.id = started.id;
@@ -107,7 +115,11 @@ export class TerminalView {
   }
 
   input(data) {
-    if (this.status === 'running' && this.id !== null) writeTerminal(this.id, data);
+    if (this.status === 'running' && this.id !== null) {
+      this.lastInputAt = Date.now();
+      this.hasDraft = data !== '\r' && data !== '\x03';
+      writeTerminal(this.id, data);
+    }
     else if (this.status === 'exited' && data === '\r') this.callbacks.onEvent?.({ type: 'restart' });
   }
 
@@ -115,6 +127,31 @@ export class TerminalView {
   paste(text) {
     this.term.paste(text);
     this.term.focus();
+  }
+
+  transcript() {
+    const buffer = this.term.buffer.active;
+    const lines = [];
+    for (let y = Math.max(0, buffer.length - 250); y < buffer.length; y++) lines.push(buffer.getLine(y)?.translateToString(true) ?? '');
+    return lines.join('\n').slice(-64000);
+  }
+
+  promptProblem() {
+    const lines = this.screenLines();
+    if (this.status !== 'running' || this.id === null || this.agent.state !== 'idle' || !delegationReady(this.tool, lines) || this.submitting || this.hasDraft || !this.lastOutputAt || Date.now() - Math.max(this.lastInputAt, this.lastOutputAt) < 1500) {
+      return 'Target is busy, needs user input, has a draft, is not at a recognized prompt, or is still settling. No prompt was sent.';
+    }
+    return null;
+  }
+
+  async submitPrompt(prompt) {
+    const problem = this.promptProblem();
+    if (problem) throw new Error(problem);
+    this.submitting = true;
+    const generation = this.generation;
+    this.lastInputAt = Date.now();
+    try { await submitTerminalPrompt(this.id, prompt); }
+    finally { if (generation === this.generation) this.submitting = false; }
   }
 
   handleKey(event) {

@@ -2,7 +2,8 @@ import { THEME_LIST, FONTS, DEFAULT_FONT } from './themes.js';
 
 export const AI_TOOLS = ['claude', 'codex', 'agy', 'opencode'];
 // A local-model chat talks to LM Studio, Ollama or the like, and runs in OpenCode.
-export const TOOLS = [...AI_TOOLS, 'local', 'shell'];
+export const DELEGATION_TOOLS = [...AI_TOOLS, 'local'];
+export const TOOLS = [...DELEGATION_TOOLS, 'shell'];
 export const engineOf = tool => tool === 'local' ? 'opencode' : tool;
 // `qwen/qwen3-coder-30b` reads as `qwen3-coder-30b`.
 export const modelLabel = model => String(model ?? '').split('/').pop();
@@ -111,6 +112,21 @@ export function normalize(value) {
     for (const tool of AI_TOOLS) if (isText(value.toolPaths[tool]) && value.toolPaths[tool].trim()) state.toolPaths[tool] = value.toolPaths[tool];
   }
   state.settings = normalizeSettings(value.settings);
+  // Parents must exist in the same project. Break malformed cycles without losing chats.
+  for (const chat of state.chats) {
+    const raw = list(value.chats).find(c => c?.id === chat.id);
+    const parent = chats.get(raw?.parentId);
+    if (raw && Object.hasOwn(raw, 'parentId')) chat.parentId = parent && parent.id !== chat.id && parent.projectId === chat.projectId && DELEGATION_TOOLS.includes(parent.tool) && DELEGATION_TOOLS.includes(chat.tool) ? parent.id : null;
+  }
+  for (const chat of state.chats) {
+    const seen = new Set([chat.id]);
+    let ancestor = chats.get(chat.parentId);
+    while (ancestor) {
+      if (seen.has(ancestor.id)) { chat.parentId = null; break; }
+      seen.add(ancestor.id);
+      ancestor = chats.get(ancestor.parentId);
+    }
+  }
   return state;
 }
 
@@ -183,11 +199,14 @@ export function removeProject(state, id) {
 
 // A local-model chat also takes the server and model it uses (`local`), and is named after the
 // model unless given a title.
-export function addChat(state, tool, projectId, title = '', local = null) {
+export function addChat(state, tool, projectId, title = '', local = null, parentId = null) {
   if (!TOOLS.includes(tool)) throw new Error(`Unknown tool: ${tool}`);
   if (projectId !== null && !state.projects.some(p => p.id === projectId)) throw new Error('Unknown project');
+  const parent = state.chats.find(c => c.id === parentId);
+  if (parentId && (!parent || parent.projectId !== projectId || !DELEGATION_TOOLS.includes(parent.tool) || !DELEGATION_TOOLS.includes(tool))) throw new Error('AI children must share their parent’s project');
   if (tool === 'local' && !(local?.server && local?.model)) throw new Error('A local-model chat needs a server and a model');
   const chat = { id: crypto.randomUUID(), tool, projectId, title: title.trim() || (tool === 'local' ? modelLabel(local.model) : '') || 'New chat', sessionId: null };
+  if (parentId) chat.parentId = parentId;
   if (tool === 'local') Object.assign(chat, { server: local.server, model: local.model });
   ensureSessionId(chat);
   state.chats.push(chat);
@@ -231,7 +250,22 @@ export function closeChat(state, id) {
 
 export function removeChat(state, id) {
   closeChat(state, id);
+  const parentId = state.chats.find(c => c.id === id)?.parentId ?? null;
+  for (const child of state.chats.filter(c => c.parentId === id)) child.parentId = parentId;
   state.chats = state.chats.filter(c => c.id !== id);
+}
+
+export function chatTree(chats, parentId = null, depth = 0) {
+  return chats.filter(c => (c.parentId ?? null) === parentId)
+    .flatMap(chat => [{ chat, depth }, ...chatTree(chats, chat.id, depth + 1)]);
+}
+
+// Delegation follows the hierarchy; a child can also report back to its immediate parent.
+export function delegationTargets(state, sourceId) {
+  const source = state.chats.find(c => c.id === sourceId);
+  if (!source || !DELEGATION_TOOLS.includes(source.tool)) return [];
+  const descendants = new Set(chatTree(state.chats, sourceId).map(({ chat }) => chat.id));
+  return state.chats.filter(c => DELEGATION_TOOLS.includes(c.tool) && c.projectId === source.projectId && (descendants.has(c.id) || c.id === source.parentId));
 }
 
 export function pinChat(state, id) {

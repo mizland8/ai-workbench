@@ -84,3 +84,16 @@ test('working shows at once; idle and waiting must hold before they count', () =
   assert.equal(status.observe('waiting', 2400), 0);
   assert.deepEqual(changes, ['starting→working', 'working→idle', 'idle→waiting']);
 });
+
+// Readiness must identify a prompt, not simply the absence of working hints.
+test('delegation rejects menus, sign-in, approvals, and unknown screens', async () => {
+  const { delegationReady } = await import('../src/agent-status.js');
+  for (const name of ['agyIdle', 'codexIdle', 'claudeDone', 'opencodeStart']) {
+    assert.equal(delegationReady(expected[name][0], screens[name]), true, name);
+  }
+  for (const name of ['agyApproval', 'agyTrust', 'agyWorking', 'codexApproval', 'codexWorking', 'claudeMenu', 'claudeTrust', 'opencodePermission']) {
+    assert.equal(delegationReady(expected[name][0], screens[name]), false, name);
+  }
+  assert.equal(delegationReady('agy', ['Sign in to Google', '> ', 'Press ? to see keyboard shortcuts.']), false);
+  assert.equal(delegationReady('agy', ['Unknown startup screen']), false);
+});
