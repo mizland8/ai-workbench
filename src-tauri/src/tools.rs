@@ -56,17 +56,18 @@ impl Tool {
         match self {
             Tool::Claude if windows => "irm https://claude.ai/install.ps1 | iex",
             Tool::Claude => "curl -fsSL https://claude.ai/install.sh | bash",
+            Tool::Codex if windows => "npm.cmd install -g @openai/codex",
             Tool::Codex => "npm install -g @openai/codex",
             Tool::Agy if windows => "irm https://antigravity.google/cli/install.ps1 | iex",
             // The script is served gzip-compressed, so curl has to unpack it before bash reads it.
             Tool::Agy => "curl -fsSL --compressed https://antigravity.google/cli/install.sh | bash",
-            Tool::Opencode if windows => "npm install -g opencode-ai",
+            Tool::Opencode if windows => "npm.cmd install -g opencode-ai",
             Tool::Opencode => "curl -fsSL https://opencode.ai/install | bash",
         }
     }
 
     pub fn install_needs_node(self) -> bool {
-        self.install_command().starts_with("npm ")
+        self.install_command().starts_with("npm ") || self.install_command().starts_with("npm.cmd ")
     }
 
     pub fn docs_url(self) -> &'static str {
@@ -168,7 +169,8 @@ pub fn detect(tool: Tool, custom: Option<&str>, node_found: bool) -> ToolStatus 
 
 /// Check every tool at once; each check runs the CLI, so they go in parallel.
 pub fn detect_all(custom_paths: &HashMap<String, String>) -> Vec<ToolStatus> {
-    let node_found = which::which_in("npm", Some(env::search_path()), env::home_dir()).is_ok();
+    let node_found = ["node", "npm"].into_iter()
+        .all(|program| which::which_in(program, Some(env::search_path()), env::home_dir()).is_ok());
     let handles: Vec<_> = Tool::ALL
         .into_iter()
         .map(|tool| {
@@ -232,5 +234,29 @@ mod tests {
     fn missing_custom_path_is_reported() {
         let err = resolve(Tool::Codex, Some("/nonexistent/codex")).unwrap_err();
         assert!(err.contains("/nonexistent/codex"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn npm_installers_use_the_cmd_launcher_and_require_node() {
+        for tool in [Tool::Codex, Tool::Opencode] {
+            assert!(tool.install_command().starts_with("npm.cmd "));
+            assert!(tool.install_needs_node());
+        }
+        assert!(!Tool::Agy.install_needs_node());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "checks installed CLIs on the current Windows PC"]
+    fn installed_windows_clis_are_detected_and_run() {
+        env::refresh();
+        for tool in [Tool::Claude, Tool::Codex, Tool::Agy] {
+            let status = detect(tool, None, true);
+            assert!(status.path.is_some(), "{}: {:?}", tool.name(), status.problem);
+            assert!(status.problem.is_none(), "{}: {:?}", tool.name(), status.problem);
+            assert!(status.version.is_some(), "{} version was not detected", tool.name());
+            println!("{}: {} ({})", tool.name(), status.version.unwrap(), status.path.unwrap());
+        }
     }
 }

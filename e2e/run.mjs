@@ -80,6 +80,37 @@ try {
   await wait(100);
   check('closing the dialog stops its terminal', (await calls('terminal_stop')).length === 1);
 
+  // An installer exiting successfully isn't enough: the CLI must be found and runnable.
+  await click('[data-action=tools]');
+  await wait(100);
+  await page.eval(`__AIW_TEST__.toolCheckDelays = [400, 0]; document.querySelector('[data-recheck]').click();`);
+  await wait(30);
+  await page.eval(`__AIW_TEST__.toolsMissing = []; document.querySelector('[data-recheck]').click();`);
+  await wait(450);
+  check('an old detection result cannot overwrite a newer installed CLI', await q(`!document.querySelector('[data-install=opencode]') && !!document.querySelector('[data-login=opencode]')`));
+  await page.eval(`__AIW_TEST__.toolsMissing = ['opencode']; document.querySelector('[data-recheck]').click();`);
+  await wait(100);
+  await click('[data-install=opencode]');
+  await wait(100);
+  await page.eval(`${lastTerm('opencode')}.send({ type: 'exit', code: 0 });`);
+  await wait(150);
+  check('successful installer with missing CLI explains detection failure', /couldn’t be verified/.test(await q(`document.querySelector('.helper-title').textContent`)) && await q(`!!document.querySelector('[data-install=opencode]')`));
+  check('install completion refreshes the environment', (await calls('detect_tools')).at(-1).refresh === true);
+  await click('[data-install=opencode]');
+  await wait(100);
+  await page.eval(`__AIW_TEST__.toolsMissing = []; ${lastTerm('opencode')}.send({ type: 'exit', code: 0 });`);
+  await wait(150);
+  check('verified installation shows version and replaces install action', /OpenCode installed · 1.2.3/.test(await q(`document.querySelector('.helper-title').textContent`)) && await q(`!document.querySelector('[data-install=opencode]') && !!document.querySelector('[data-login=opencode]')`));
+  await page.eval(`__AIW_TEST__.toolsMissing = ['opencode']; document.querySelector('dialog [data-recheck]').click();`);
+  await wait(100);
+  await click('[data-install=opencode]');
+  await wait(100);
+  await page.eval(`${lastTerm('opencode')}.send({ type: 'exit', code: 7 });`);
+  await wait(150);
+  check('failed installer retains its exit code', /exit code 7/.test(await q(`document.querySelector('.helper-title').textContent`)));
+  await page.eval(`document.querySelector('dialog [data-dismiss].primary').click();`);
+  await wait(100);
+
   // 3. A project is a page
   await click('.steps [data-action=add-project]');
   await wait(100);

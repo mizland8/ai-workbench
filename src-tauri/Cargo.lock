@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "ai-workbench"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "libc",
  "portable-pty",
@@ -35,6 +35,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "which",
+ "winreg 0.55.0",
 ]
 
 [[package]]

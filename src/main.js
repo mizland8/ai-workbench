@@ -12,6 +12,7 @@ const state = loaded.state;
 if (!state.settings.reopenChats) store.closeAllChats(state);
 let notice = loaded.problem;
 let tools = null;
+let toolsCheck = 0;
 let usage = null;
 let usageError = '';
 let homePath = '';
@@ -995,7 +996,7 @@ function toolsDialog() {
     status.textContent = checking ? 'checking…' : '';
   };
   refreshToolsDialog(backend.isDesktop);
-  if (backend.isDesktop) checkTools();
+  if (backend.isDesktop) checkTools(true);
 
   const runHelper = async (kind, tool) => {
     helper?.dispose();
@@ -1006,11 +1007,18 @@ function toolsDialog() {
       : tool === 'agy' ? 'Signing in to Antigravity CLI: finish signing in, then type /quit' : `Signing in to ${name}`;
     const host = box.querySelector('.helper-terminal');
     host.innerHTML = '';
-    const view = new TerminalView(host, { theme: state.theme, fontSize: state.settings.fontSize, fontFamily: currentFont, onStatus: current => {
+    const view = new TerminalView(host, { theme: state.theme, fontSize: state.settings.fontSize, fontFamily: currentFont, onStatus: async current => {
       if (current !== helper || (current.status !== 'exited' && current.status !== 'failed')) return;
-      box.querySelector('.helper-title').textContent = current.status === 'failed' ? current.error
-        : current.exitCode ? `Finished with exit code ${current.exitCode}.` : 'Finished.';
-      checkTools(kind === 'install');
+      const title = box.querySelector('.helper-title');
+      title.textContent = current.status === 'failed' ? current.error
+        : current.exitCode === null ? 'Stopped.'
+        : current.exitCode ? `Finished with exit code ${current.exitCode}.` : kind === 'install' ? `Checking ${name}…` : 'Finished.';
+      const checked = await checkTools(kind === 'install');
+      if (current !== helper || kind !== 'install' || current.status === 'failed' || current.exitCode !== 0) return;
+      const installed = checked?.[tool];
+      title.textContent = installed?.path && !installed.problem ? `${name} installed${installed.version ? ` · ${installed.version}` : ''}.`
+        : installed?.path ? `${name} was found, but couldn’t run. ${installed.problem}`
+        : `Installation finished, but ${name} couldn’t be verified. ${installed?.problem ?? 'Try check again or locate the installed program.'}`;
     } });
     helper = view;
     await view.start({ kind, tool, toolPath: state.toolPaths[tool] ?? null, cwd: null });
@@ -1039,11 +1047,19 @@ function toolsDialog() {
 
 function checkTools(refresh = false) {
   if (!backend.isDesktop) return Promise.resolve();
+  const check = ++toolsCheck;
   refreshToolsDialog?.(true);
   return backend.detectTools(state.toolPaths, refresh)
-    .then(list => { tools = Object.fromEntries(list.map(s => [s.id, s])); })
-    .catch(error => { notice = `Couldn’t check the AI tools: ${error}`; })
-    .finally(() => { renderHeader(); renderEmpty(); renderStatus(); refreshToolsDialog?.(false); });
+    .then(list => {
+      const checked = Object.fromEntries(list.map(s => [s.id, s]));
+      if (check === toolsCheck) tools = checked;
+      return checked;
+    })
+    .catch(error => { if (check === toolsCheck) notice = `Couldn’t check the AI tools: ${error}`; })
+    .finally(() => {
+      if (check !== toolsCheck) return;
+      renderHeader(); renderEmpty(); renderStatus(); refreshToolsDialog?.(false);
+    });
 }
 
 async function checkFolders() {

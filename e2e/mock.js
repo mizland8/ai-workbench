@@ -28,7 +28,12 @@
           const missing = args.path.includes('missing');
           return { exists: !missing, isDir: !missing && !args.path.endsWith('.txt'), name: args.path.split('/').filter(Boolean).pop() };
         }
-        case 'detect_tools': return ['claude', 'codex', 'agy', 'opencode'].map(status);
+        case 'detect_tools': {
+          const found = ['claude', 'codex', 'agy', 'opencode'].map(status);
+          const delay = T.toolCheckDelays?.shift();
+          if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+          return found;
+        }
         case 'usage_summary': {
           if (T.usageFailure) throw T.usageFailure;
           const now = Date.now();

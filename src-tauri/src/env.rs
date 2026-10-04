@@ -111,6 +111,11 @@ fn without_appimage_vars(env: Env, appdir: &OsStr) -> Env {
 fn merged_path(shell_path: Option<OsString>) -> OsString {
     let home = home_dir();
     let mut dirs: Vec<PathBuf> = Vec::new();
+    // Installers update the registry, not the environment of an already-running desktop app.
+    #[cfg(windows)]
+    for path in windows_registered_paths() {
+        dirs.extend(std::env::split_paths(&path));
+    }
     for path in [shell_path, std::env::var_os("PATH")].into_iter().flatten() {
         dirs.extend(std::env::split_paths(&path));
     }
@@ -125,11 +130,50 @@ fn merged_path(shell_path: Option<OsString>) -> OsString {
     if let Some(appdata) = std::env::var_os("APPDATA") {
         dirs.push(PathBuf::from(appdata).join("npm"));
     }
+    #[cfg(windows)]
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let local = PathBuf::from(local);
+        dirs.push(local.join("agy/bin"));
+        dirs.push(local.join("Programs/nodejs"));
+    }
     let mut seen = HashSet::new();
     dirs.retain(|dir| {
         !dir.as_os_str().is_empty() && std::env::join_paths([dir]).is_ok() && seen.insert(dir.clone())
     });
     std::env::join_paths(dirs).unwrap_or_default()
+}
+
+#[cfg(windows)]
+fn windows_registered_paths() -> Vec<OsString> {
+    use winreg::{enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE}, RegKey};
+    [
+        (HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"),
+        (HKEY_CURRENT_USER, "Environment"),
+    ]
+    .into_iter()
+    .filter_map(|(root, key)| RegKey::predef(root).open_subkey(key).ok()?.get_value::<String, _>("Path").ok())
+    .map(|path| expand_windows_path(&path).into())
+    .collect()
+}
+
+/// Registry PATH values can contain references such as %USERPROFILE% or %APPDATA%.
+#[cfg(windows)]
+fn expand_windows_path(path: &str) -> String {
+    let mut expanded = String::new();
+    let mut rest = path;
+    while let Some(start) = rest.find('%') {
+        expanded.push_str(&rest[..start]);
+        rest = &rest[start..];
+        let Some(end) = rest[1..].find('%').map(|end| end + 1) else { break };
+        let name = &rest[1..end];
+        match std::env::var_os(name) {
+            Some(value) => expanded.push_str(&value.to_string_lossy()),
+            None => expanded.push_str(&rest[..=end]),
+        }
+        rest = &rest[end + 1..];
+    }
+    expanded.push_str(rest);
+    expanded
 }
 
 /// Run the user's interactive login shell once and read back its environment.
@@ -260,6 +304,15 @@ pub fn run_captured(mut cmd: Command, timeout: Duration) -> Option<Captured> {
 
 /// A short check (version, sign-in) that sees the same environment as the terminals.
 pub fn probe_command(program: &Path, args: &[&str]) -> Command {
+    #[cfg(windows)]
+    let mut cmd = if program.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat")) {
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/d", "/c"]).arg(program);
+        cmd
+    } else {
+        Command::new(program)
+    };
+    #[cfg(not(windows))]
     let mut cmd = Command::new(program);
     cmd.args(args).current_dir(home_dir()).env_clear().envs(user_env());
     cmd
@@ -286,8 +339,11 @@ pub fn user_shell() -> (PathBuf, Vec<String>) {
 pub fn shell_command(command: &str) -> (PathBuf, Vec<String>) {
     #[cfg(windows)]
     {
-        let args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command];
-        (PathBuf::from("powershell.exe"), args.map(String::from).to_vec())
+        // PowerShell otherwise exits successfully even when a native installer returns an error.
+        let command = format!("$ErrorActionPreference = 'Stop'; $global:LASTEXITCODE = 0; try {{ {command}; if ($LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }} }} catch {{ Write-Error $_ -ErrorAction Continue; exit 1 }}");
+        let mut args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"].map(String::from).to_vec();
+        args.push(command);
+        (PathBuf::from("powershell.exe"), args)
     }
     #[cfg(unix)]
     {
@@ -298,6 +354,64 @@ pub fn shell_command(command: &str) -> (PathBuf, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_path_includes_native_and_npm_install_locations() {
+        let path = merged_path(Some(OsString::from(r"C:\old-path")));
+        let dirs: Vec<_> = std::env::split_paths(&path).collect();
+        let local = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap());
+        let roaming = PathBuf::from(std::env::var_os("APPDATA").unwrap());
+        assert!(dirs.contains(&local.join("agy/bin")));
+        assert!(dirs.contains(&roaming.join("npm")));
+        // An installer can update the registry while the process still holds its old PATH.
+        for registered in windows_registered_paths() {
+            for dir in std::env::split_paths(&registered).filter(|dir| !dir.as_os_str().is_empty()) {
+                assert!(dirs.contains(&dir), "missing registered PATH entry: {}", dir.display());
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn expands_registry_path_variables_without_dropping_unknown_variables() {
+        let profile = std::env::var("USERPROFILE").unwrap();
+        assert_eq!(expand_windows_path(r"%USERPROFILE%\bin;%AIW_UNKNOWN_PATH_VARIABLE%\bin"),
+            format!(r"{profile}\bin;%AIW_UNKNOWN_PATH_VARIABLE%\bin"));
+        assert_eq!(expand_windows_path("unfinished%"), "unfinished%");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn probes_cmd_launchers_in_paths_with_spaces() {
+        let dir = std::env::temp_dir().join(format!("aiw npm launcher {}", unique_test_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let launcher = dir.join("mock.cmd");
+        std::fs::write(&launcher, "@echo off\r\nif \"%~1\"==\"--version\" (echo 1.2.3 & exit /b 0)\r\necho failed 1>&2\r\nexit /b 7\r\n").unwrap();
+        let version = run_captured(probe_command(&launcher, &["--version"]), Duration::from_secs(5)).unwrap();
+        let failure = run_captured(probe_command(&launcher, &["fail"]), Duration::from_secs(5)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(version.success, "{}", version.text());
+        assert!(version.text().contains("1.2.3"));
+        assert!(!failure.success);
+        assert!(failure.text().contains("failed"));
+    }
+
+    #[cfg(windows)]
+    fn unique_test_id() -> u128 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn installer_shell_reports_native_and_powershell_failures() {
+        for (script, success) in [("cmd.exe /d /c exit 7", false), ("throw 'install failed'", false), ("Write-Output installed", true)] {
+            let (program, args) = shell_command(script);
+            let args: Vec<_> = args.iter().map(String::as_str).collect();
+            let out = run_captured(probe_command(&program, &args), Duration::from_secs(10)).unwrap();
+            assert_eq!(out.success, success, "{script}: {}", out.text());
+        }
+    }
 
     #[test]
     fn strips_variables_from_the_launching_terminal() {

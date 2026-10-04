@@ -25,6 +25,8 @@ AI Workbench runs the AI command-line tools already installed on the computer; i
 
 On Windows the dialog shows the PowerShell or npm equivalents. The app reads your login shell's environment (PATH, API keys, version managers), so tools are found even when the app starts from a desktop launcher instead of a terminal.
 
+On Windows, opening **AI tools** or choosing **check again** reloads the system and user PATH, including changes made by an installer while the app was open. The app also searches the default Antigravity CLI and npm install folders. When an installer finishes, the dialog checks that the CLI can run before reporting success; installation errors and programs that still cannot be found stay visible there.
+
 ## Local models
 
 A chat can also use a model you run yourself in LM Studio, Ollama, or another server with the same OpenAI-compatible API, on this computer or another one on your network. Start a chat with **Local model** and pick the model from the list the server offers. The chat runs in OpenCode (install it from **AI tools**). OpenCode gets the server and model for that chat only: your own OpenCode settings and sign-ins aren't changed, and the chat's prompts and replies go to your model server, not to a cloud AI service.
