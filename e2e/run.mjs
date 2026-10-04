@@ -507,6 +507,26 @@ try {
   const accepted = await bridge('send');
   check('bridge submits to the existing AGY terminal', accepted.accepted === true && (await calls('terminal_submit_prompt')).at(-1)?.prompt === 'Implement the grapple animation', accepted);
   check('bridge reads helper terminal output', (await bridge('read')).text.includes('Implement the grapple animation'));
+  await page.eval(`${pane(helper)}.querySelector('.xterm-helper-textarea').focus();`);
+  await page.type('x');
+  await show('agy', '> x\nPress ? to see keyboard shortcuts.');
+  await wait(1900);
+  check('populated AGY composer blocks delegation', !!(await bridge('send')).error);
+  await page.key('Backspace', { keyCode: 8 });
+  await wait(20);
+  await show('agy', '> \nPress ? to see keyboard shortcuts.');
+  await wait(1900);
+  check('deleting the final draft character unblocks AGY delegation', (await bridge('send')).accepted === true);
+  await show('agy', '> \nwrapped draft remains\nPress ? to see keyboard shortcuts.');
+  await wait(1900);
+  check('multiline AGY draft blocks delegation', !!(await bridge('send')).error);
+  const rule = '─'.repeat(40);
+  await show('agy', `${rule}\n> half-written idea\n${rule}\n    Gemini 3.8 Flash · high`);
+  await wait(1900);
+  check('current AGY prompt box with text blocks delegation', !!(await bridge('send')).error);
+  await show('agy', `${rule}\n>\n${rule}\n? for shortcuts    Gemini 3.8 Flash · high`);
+  await wait(1900);
+  check('empty current AGY prompt box accepts delegation', (await bridge('send')).accepted === true);
   await show('agy', 'Do you want to proceed?\n❯ Yes\nNo');
   await wait(1900);
   check('approval screen blocks delegation', !!(await bridge('send')).error);
@@ -527,7 +547,7 @@ try {
   await wait(1700);
   check('hierarchy and name survive reload', (await saved()).chats.find(c => c.id === helper)?.parentId === lead && (await saved()).chats.find(c => c.id === helper)?.title === 'Grapples');
 
-  await show('codex', '› Ask Codex to do anything\n? for shortcuts');
+  await show('codex', '› \x1b[2mAsk Codex to do anything\x1b[0m\n\n? for shortcuts');
   await wait(1900);
   await rightClick(lead);
   await menuItem('Delegation instructions');

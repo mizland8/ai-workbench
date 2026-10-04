@@ -83,7 +83,8 @@
         case 'terminal_write': {
           const t = T.terminals[args.id];
           t.input.push(args.data);
-          t.send(args.data === '\r' ? '\r\n> ' : args.data === '\n' ? '\r\n  ' : args.data);
+          // Echo as a line editor would; xterm rejects a raw DEL from Backspace.
+          t.send(args.data === '\r' ? '\r\n> ' : args.data === '\n' ? '\r\n  ' : args.data === '\x7f' ? '\b \b' : args.data);
           return null;
         }
         case 'terminal_resize': { const t = T.terminals[args.id]; if (t) t.size = [args.cols, args.rows]; return null; }

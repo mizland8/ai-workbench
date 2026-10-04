@@ -4,7 +4,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 import { startTerminal, writeTerminal, resizeTerminal, stopTerminal, openLink, submitTerminalPrompt } from './backend.js';
-import { detectAgentState, delegationReady, AgentStatus } from './agent-status.js';
+import { detectAgentState, delegationReady, promptDraft, AgentStatus } from './agent-status.js';
 import { THEMES, DEFAULT_THEME } from './themes.js';
 
 export const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
@@ -138,7 +138,14 @@ export class TerminalView {
 
   promptProblem() {
     const lines = this.screenLines();
-    if (this.status !== 'running' || this.id === null || this.agent.state !== 'idle' || !delegationReady(this.tool, lines) || this.submitting || this.hasDraft || !this.lastOutputAt || Date.now() - Math.max(this.lastInputAt, this.lastOutputAt) < 1500) {
+    const typed = this.screenLines(true);
+    // Keystrokes cannot tell whether Backspace or Ctrl-U emptied the prompt, so once the screen
+    // has settled after the latest input, what it shows decides.
+    if (this.lastOutputAt > this.lastInputAt && Date.now() - this.lastOutputAt >= 1500) {
+      const draft = promptDraft(this.tool, typed);
+      if (draft !== null) this.hasDraft = draft;
+    }
+    if (this.status !== 'running' || this.id === null || this.agent.state !== 'idle' || !delegationReady(this.tool, lines, typed) || this.submitting || this.hasDraft || !this.lastOutputAt || Date.now() - Math.max(this.lastInputAt, this.lastOutputAt) < 1500) {
       return 'Target is busy, needs user input, has a draft, is not at a recognized prompt, or is still settling. No prompt was sent.';
     }
     return null;
@@ -190,11 +197,20 @@ export class TerminalView {
     }
   }
 
-  // The rows on screen right now, whatever the scroll position.
-  screenLines() {
+  // The rows on screen right now, whatever the scroll position; `withoutDim` blanks dim text such as placeholders.
+  screenLines(withoutDim = false) {
     const buffer = this.term.buffer.active;
     const lines = [];
-    for (let y = buffer.baseY; y < buffer.baseY + this.term.rows; y++) lines.push(buffer.getLine(y)?.translateToString(true) ?? '');
+    for (let y = buffer.baseY; y < buffer.baseY + this.term.rows; y++) {
+      const line = buffer.getLine(y);
+      if (!line || !withoutDim) { lines.push(line?.translateToString(true) ?? ''); continue; }
+      let text = '';
+      for (let x = 0, cell; x < line.length; x++) {
+        cell = line.getCell(x, cell);
+        if (cell.getWidth()) text += cell.isDim() ? ' '.repeat(cell.getWidth()) : cell.getChars() || ' ';
+      }
+      lines.push(text.trimEnd());
+    }
     return lines;
   }
 

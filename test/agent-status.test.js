@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { detectAgentState, AgentStatus } from '../src/agent-status.js';
+import { detectAgentState, delegationReady, promptDraft, AgentStatus } from '../src/agent-status.js';
 
 // Bottom lines of real screens, recorded from Claude Code 2.1.284, Codex 0.159.2 and OpenCode 1.18.34.
 const screens = {
@@ -19,7 +19,7 @@ const screens = {
   codexStreaming: ['› In two short sentences, what is a terminal multiplexer?', '• A terminal multiplexer lets you run', '› Ask Codex to do anything',
     '  GPT-6.1-Sol low · /tmp/project · ⠴', '  ? for shortcuts'],
   codexIdle: ['  >_ OpenAI Codex (v0.159.2)', '     /tmp/project', '  What are we poking with a metaphorical stick?', '› Ask Codex to do anything',
-    '  GPT-6.1-Sol low · /tmp/project', '  ? for shortcuts'],
+    '', '  GPT-6.1-Sol low · /tmp/project', '  ? for shortcuts'],
   codexTrust: ['  Folder access', '  /tmp/project', '  Trust this folder? Codex can read, edit, and run files here.', '› 1. Trust and continue',
     '  2. Quit', '  enter continue · esc quit'],
   codexApproval: ['  Would you like to run the following command?', '  $ touch probe.txt', '› 1. Yes, proceed', '  2. No, and tell Codex what to do differently'],
@@ -33,8 +33,50 @@ const screens = {
   agyApproval: [' Run command: ls -la', ' Do you want to proceed?', ' ❯ Yes', "   Yes, and always allow 'ls' in this conversation", '   No'],
   agyTrust: [' Antigravity requires permission to read, edit, and execute files here.', ' ❯ Yes, I trust this folder', '   No, exit'],
   agyIdle: [' > ', ' Press ? to see keyboard shortcuts.'],
+  // AGY 1.2.16 keeps an empty prompt open below the answer it is writing.
+  agyGenerating: ['> Reply with only the word ok.', '⣽  Generating...', '─'.repeat(60), '>', '─'.repeat(60), 'esc to cancel          Gemini 3.8 Flash · high'],
   shellQuestion: ['Overwrite settings.json? (y/n)'],
 };
+
+// Prompts recorded from AGY 1.2.16, Claude Code 2.1.289 and Codex 0.160.0 after typing, deleting and
+// Ctrl+J, with dim text blanked as screenLines(true) does: an empty prompt shows only its placeholder.
+const rule = '─'.repeat(60);
+const prompts = {
+  agy: {
+    empty: [rule, '>', rule, '? for shortcuts                         Gemini 3.8 Flash · high'],
+    draft: [rule, '> hello', rule, '                                        Gemini 3.8 Flash · high'],
+    multiline: [rule, '> one', '  two', rule, '                                        Gemini 3.8 Flash · high'],
+  },
+  claude: {
+    empty: ['                          ◐ medium · /effort', rule, '❯', rule, '  ⏵⏵ auto mode on (shift+tab to cycle)'],
+    draft: ['                          ◐ medium · /effort', rule, '❯ hello', rule, '  ⏵⏵ auto mode on (shift+tab to cycle)'],
+    multiline: ['                       ctrl+g to edit in Vim', rule, '❯ one', '  two', rule, '  ⏵⏵ auto mode on (shift+tab to cycle)'],
+  },
+  codex: {
+    empty: ['› In an earlier turn', '• Done.', '›', '', '  GPT-6.1-Sol low · /tmp/project', '  ← for agents · ? for shortcuts'],
+    draft: ['› hello', '', '  GPT-6.1-Sol low · /tmp/project'],
+    multiline: ['› one', '  two', '', '  GPT-6.1-Sol low · /tmp/project'],
+  },
+};
+
+test('the prompt reads as empty only when nothing but its placeholder is in it', () => {
+  for (const [tool, screen] of Object.entries(prompts)) {
+    assert.equal(promptDraft(tool, screen.empty), false, `${tool} empty`);
+    assert.equal(delegationReady(tool, screen.empty), true, `${tool} empty`);
+    for (const kind of ['draft', 'multiline']) {
+      assert.equal(promptDraft(tool, screen[kind]), true, `${tool} ${kind}`);
+      assert.equal(delegationReady(tool, screen[kind]), false, `${tool} ${kind}`);
+    }
+  }
+  // AGY before 1.2 drew its prompt above a footer instead of between rules.
+  const footer = 'Press ? to see keyboard shortcuts.';
+  assert.equal(promptDraft('agy', ['> ', '', footer]), false);
+  for (const lines of [['> text', footer], ['>', 'continued draft', footer], ['>', footer, '> new draft', footer]]) assert.equal(promptDraft('agy', lines), true);
+  // Menus and unknown screens are no prompt at all.
+  assert.equal(promptDraft('agy', ['> Yes, I trust this folder', '  No, exit', '  ↑/↓ Navigate · enter Confirm']), null);
+  assert.equal(promptDraft('claude', [' Select model', ' ❯ 1. Default (recommended)']), null);
+  assert.equal(promptDraft('opencode', prompts.claude.empty), null);
+});
 
 const expected = {
   claudeWorking: ['claude', 'working'], claudeDone: ['claude', 'idle'], claudeTrust: ['claude', 'waiting'],
@@ -43,7 +85,7 @@ const expected = {
   codexTrust: ['codex', 'waiting'], codexApproval: ['codex', 'waiting'],
   opencodeWorking: ['opencode', 'working'], opencodeDone: ['opencode', 'idle'], opencodeStart: ['opencode', 'idle'],
   opencodePermission: ['opencode', 'waiting'],
-  agyWorking: ['agy', 'working'], agyApproval: ['agy', 'waiting'], agyTrust: ['agy', 'waiting'], agyIdle: ['agy', 'idle'],
+  agyWorking: ['agy', 'working'], agyApproval: ['agy', 'waiting'], agyTrust: ['agy', 'waiting'], agyIdle: ['agy', 'idle'], agyGenerating: ['agy', 'working'],
   shellQuestion: ['codex', 'waiting'],
 };
 
@@ -88,10 +130,12 @@ test('working shows at once; idle and waiting must hold before they count', () =
 // Readiness must identify a prompt, not simply the absence of working hints.
 test('delegation rejects menus, sign-in, approvals, and unknown screens', async () => {
   const { delegationReady } = await import('../src/agent-status.js');
+  // Codex draws its placeholder dim, and readiness reads the screen with dim text blanked.
+  const typed = { codexIdle: screens.codexIdle.map(line => line === '› Ask Codex to do anything' ? '›' : line) };
   for (const name of ['agyIdle', 'codexIdle', 'claudeDone', 'opencodeStart']) {
-    assert.equal(delegationReady(expected[name][0], screens[name]), true, name);
+    assert.equal(delegationReady(expected[name][0], screens[name], typed[name]), true, name);
   }
-  for (const name of ['agyApproval', 'agyTrust', 'agyWorking', 'codexApproval', 'codexWorking', 'claudeMenu', 'claudeTrust', 'opencodePermission']) {
+  for (const name of ['agyApproval', 'agyTrust', 'agyWorking', 'agyGenerating', 'codexApproval', 'codexWorking', 'claudeMenu', 'claudeTrust', 'opencodePermission']) {
     assert.equal(delegationReady(expected[name][0], screens[name]), false, name);
   }
   assert.equal(delegationReady('agy', ['Sign in to Google', '> ', 'Press ? to see keyboard shortcuts.']), false);

@@ -63,15 +63,40 @@ export class AgentStatus {
   }
 }
 
+const rule = /^\s*─{3,}\s*$/;
+const oldAgyFooter = /Press \? to see keyboard shortcuts/i;
+const promptMarks = { agy: '>', claude: '❯', codex: '›' };
+
+// Whether the prompt holds text you typed: true, false, or null when no prompt is on screen.
+// Pass the screen without its dim text: the CLIs draw placeholders like 'Try "fix lint errors"' dim.
+export function promptDraft(tool, lines) {
+  const mark = promptMarks[tool];
+  if (!mark) return null;
+  let first, end;
+  if (tool === 'codex') {
+    // Codex's prompt runs from its last › line down to the next blank line.
+    first = lines.findLastIndex(line => line.startsWith(mark));
+    end = first + 1;
+    while (end < lines.length && lines[end].trim()) end++;
+  } else {
+    // Claude Code and AGY draw the prompt between two rules; AGY before 1.2 drew it above a "Press ?" footer.
+    end = lines.findLastIndex(line => rule.test(line) || (tool === 'agy' && oldAgyFooter.test(line)));
+    first = end - 1;
+    while (first >= 0 && !lines[first].trimStart().startsWith(mark) && !rule.test(lines[first])) first--;
+  }
+  if (first < 0 || !lines[first].trimStart().startsWith(mark)) return null;
+  return [lines[first].trimStart().slice(mark.length), ...lines.slice(first + 1, end)].join('\n').trim() !== '';
+}
+
 // Absence of a spinner alone is insufficient: sign-in screens and menus can also be idle.
-export function delegationReady(tool, lines) {
+// `typed` is the screen without its dim text, as promptDraft wants it.
+export function delegationReady(tool, lines, typed = lines) {
   if (detectAgentState(tool, lines) !== 'idle') return false;
   const text = lines.join('\n');
   if (/enter to confirm|enter.*continue|select (model|provider)|sign in|log in/i.test(text)) return false;
-  const trimmed = lines.map(line => line.trim());
-  if (tool === 'agy') return trimmed.some(line => /^>\s*$/.test(line)) && /keyboard shortcuts/i.test(text);
-  if (tool === 'claude') return trimmed.includes('❯');
-  if (tool === 'codex') return trimmed.some(line => /^›(?:\s+(?!\d+[.)])|$)/.test(line)) && /\? for shortcuts/.test(text);
+  if (tool === 'agy' || tool === 'claude') return promptDraft(tool, typed) === false;
+  // Codex hides "? for shortcuts" while its prompt holds text or a menu is open.
+  if (tool === 'codex') return promptDraft(tool, typed) === false && /\? for shortcuts/.test(text);
   if (tool === 'opencode') return /tab agents.*ctrl\+p commands/.test(text) && lines.some(line => /┃/.test(line));
   return false;
 }
