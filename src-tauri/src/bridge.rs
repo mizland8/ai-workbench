@@ -10,7 +10,7 @@ use std::time::Duration;
 use tauri::{ipc::Channel, State};
 
 const LIMIT: u64 = 64 * 1024;
-const GUIDE: &str = "AI Workbench delegation is available in this terminal. Run the executable in AI_WORKBENCH_CLI with: bridge list; bridge read <chat-name-or-id>; bridge send <chat-name-or-id> <prompt>. In a POSIX shell use: \"$AI_WORKBENCH_CLI\" bridge list. In PowerShell use: & $env:AI_WORKBENCH_CLI bridge list. To send multiline text, use bridge send <target> - and provide stdin. Targets are your descendants and your immediate parent only; other chats are inaccessible. Exact unique names or IDs are required. list returns status and IDs. send submits a prompt to the existing chat, and rejects busy, approval, closed, or unsettled terminals; do not retry to answer approvals. read returns terminal text, not a structured answer or a guarantee the task succeeded. Poll list/read to inspect results. Assign clear file ownership and review changes. Never print or share AI_WORKBENCH_TOKEN.\n";
+const GUIDE: &str = "AI Workbench delegation is available in this terminal. Run the executable in AI_WORKBENCH_CLI with: bridge list; bridge read <chat-name-or-id>; bridge send <chat-name-or-id> <prompt>. In a POSIX shell use: \"$AI_WORKBENCH_CLI\" bridge list. In PowerShell use: & $env:AI_WORKBENCH_CLI bridge list. To send multiline text, use bridge send <target> - and provide stdin. Targets are your descendants and your immediate parent only; other chats are inaccessible. Exact unique names or IDs are required. list returns status and IDs. send submits a prompt to the existing chat, and rejects busy, approval, closed, or unsettled terminals; do not retry to answer approvals. read returns terminal text, not a structured answer or a guarantee the task succeeded. send returns a persistent taskId. Use bridge tasks or bridge task <task-id> to inspect tracked tasks. Workers must report with bridge complete <task-id> <summary> or bridge fail <task-id> <reason>; use - for multiline stdin. Reports are worker claims, not independent verification. Parents use bridge inbox to read saved reports, then bridge ack <task-id> after reviewing. Reports do not type into a busy parent. A delivery_unknown or dispatching task needs manual inspection before retrying; prompts are never automatically replayed. Task history and reports survive app restarts. Poll list/read to inspect terminal output. Assign clear file ownership and review changes. Never print or share AI_WORKBENCH_TOKEN.\n";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -95,7 +95,11 @@ fn read_request(stream: impl Read) -> Result<Request, String> {
         return Err("Request is too large or incomplete".into());
     }
     let request: Request = serde_json::from_str(&line).map_err(|_| "Invalid request")?;
-    if !["list", "read", "send"].contains(&request.method.as_str()) {
+    if ![
+        "list", "read", "send", "tasks", "task", "complete", "fail", "inbox", "ack",
+    ]
+    .contains(&request.method.as_str())
+    {
         return Err("Unknown bridge method".into());
     }
     Ok(request)
@@ -155,14 +159,16 @@ pub fn cli() -> Option<i32> {
         if args.get(1).map(String::as_str) == Some("help") {
             return Ok(json!({ "instructions": GUIDE }));
         }
-        let method = args
-            .get(1)
-            .ok_or("Use bridge list, read <target>, or send <target> <prompt>")?;
-        if !["list", "read", "send"].contains(&method.as_str()) {
+        let method = args.get(1).ok_or("Use bridge help for commands")?;
+        if ![
+            "list", "read", "send", "tasks", "task", "complete", "fail", "inbox", "ack",
+        ]
+        .contains(&method.as_str())
+        {
             return Err("Unknown bridge method".into());
         }
         let target = args.get(2).cloned().unwrap_or_default();
-        if method != "list" && target.is_empty() {
+        if !["list", "tasks", "inbox"].contains(&method.as_str()) && target.is_empty() {
             return Err("A target chat name or ID is required".into());
         }
         let mut prompt = args.get(3..).unwrap_or_default().join(" ");
@@ -197,7 +203,7 @@ pub fn cli() -> Option<i32> {
             .map_err(|e| e.to_string())?;
         writeln!(stream, "{}", request).map_err(|e| e.to_string())?;
         let mut response = String::new();
-        BufReader::new(stream.take(512 * 1024))
+        BufReader::new(stream.take(2 * 1024 * 1024))
             .read_line(&mut response)
             .map_err(|e| e.to_string())?;
         serde_json::from_str(&response).map_err(|_| "Invalid bridge response".into())

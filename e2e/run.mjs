@@ -505,7 +505,13 @@ try {
   await wait(1900);
   check('bridge lists the named helper', (await bridge('list')).chats[0]?.name === 'Animations');
   const accepted = await bridge('send');
-  check('bridge submits to the existing AGY terminal', accepted.accepted === true && (await calls('terminal_submit_prompt')).at(-1)?.prompt === 'Implement the grapple animation', accepted);
+  check('bridge submits to the existing AGY terminal', accepted.accepted === true && (await calls('terminal_submit_prompt')).at(-1)?.prompt.includes(`[AI Workbench task ${accepted.taskId}]`), accepted);
+  const workerBridge = (method, target, prompt) => page.eval(`return __AIW_TEST__.bridge({ source: { chatId: ${JSON.stringify(helper)}, terminalId: Object.values(__AIW_TEST__.terminals).find(t => t.request.chatId === ${JSON.stringify(helper)}).id }, method: ${JSON.stringify(method)}, target: ${JSON.stringify(target)}, prompt: ${JSON.stringify(prompt)} });`);
+  await show('codex', 'Working…\n• Working (esc to interrupt)');
+  const submitsBeforeReport = (await calls('terminal_submit_prompt')).length;
+  const completed = await workerBridge('complete', accepted.taskId, 'Updated animation.gd; checks passed.');
+  check('worker completion is queued while its parent is busy', completed.task?.status === 'completed' && (await calls('terminal_submit_prompt')).length === submitsBeforeReport);
+  check('parent inbox returns the explicit worker report', (await bridge('inbox')).reports[0]?.result === 'Updated animation.gd; checks passed.');
   check('bridge reads helper terminal output', (await bridge('read')).text.includes('Implement the grapple animation'));
   await page.eval(`${pane(helper)}.querySelector('.xterm-helper-textarea').focus();`);
   await page.type('x');
@@ -540,13 +546,16 @@ try {
   check('renamed helper routes by the new name', (await bridge('list')).chats[0]?.name === 'Grapples' && !!(await bridge('read', 'Animations')).error);
   await rightClick(lead);
   await menuItem('AI handoffs');
-  check('handoff is visible in the log', await q(`document.querySelector('dialog').textContent.includes('Wrestling Lead → Animations')`));
+  check('handoff is visible in the log', await q(`document.querySelector('dialog').textContent.includes('Wrestling Lead → Grapples')`));
   await click('dialog [data-dismiss]');
   await page.shot('20-delegation-hierarchy');
   await page.eval('location.reload();');
   await wait(1700);
   check('hierarchy and name survive reload', (await saved()).chats.find(c => c.id === helper)?.parentId === lead && (await saved()).chats.find(c => c.id === helper)?.title === 'Grapples');
 
+  check('worker report survives a full interface reload', (await bridge('task', accepted.taskId)).task?.status === 'completed' && (await bridge('inbox')).reports[0]?.id === accepted.taskId);
+  await bridge('ack', accepted.taskId);
+  check('acknowledging a worker report clears it from the inbox', (await bridge('inbox')).reports.length === 0);
   await show('codex', '› \x1b[2mAsk Codex to do anything\x1b[0m\n\n? for shortcuts');
   await wait(1900);
   await rightClick(lead);

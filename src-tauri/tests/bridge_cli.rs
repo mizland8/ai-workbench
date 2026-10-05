@@ -10,7 +10,9 @@ fn native_client_routes_named_tasks_and_multiline_stdin_without_opening_a_gui() 
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap().to_string();
     let server = std::thread::spawn(move || {
-        for method in ["list", "read", "send"] {
+        for method in [
+            "list", "read", "send", "tasks", "task", "complete", "fail", "inbox", "ack",
+        ] {
             let (mut stream, _) = listener.accept().unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
@@ -22,25 +24,27 @@ fn native_client_routes_named_tasks_and_multiline_stdin_without_opening_a_gui() 
             let request: Value = serde_json::from_str(&line).unwrap();
             assert_eq!(request["token"], "test-private-token");
             assert_eq!(request["method"], method);
-            if method != "list" {
+            if !["list", "tasks", "inbox"].contains(&method) {
                 assert_eq!(request["target"], "Grapple Animations");
             }
-            if method == "send" {
+            if ["send", "complete", "fail"].contains(&method) {
                 assert_eq!(request["prompt"], "Implement grapples\nReview the result");
             }
             writeln!(stream, "{}", json!({ "ok": true, "method": method })).unwrap();
         }
     });
-    for method in ["list", "read", "send"] {
+    for method in [
+        "list", "read", "send", "tasks", "task", "complete", "fail", "inbox", "ack",
+    ] {
         let mut command = Command::new(env!("CARGO_BIN_EXE_ai-workbench"));
         command
             .args(["bridge", method])
             .env("AI_WORKBENCH_BRIDGE", &address)
             .env("AI_WORKBENCH_TOKEN", "test-private-token");
-        if method != "list" {
+        if !["list", "tasks", "inbox"].contains(&method) {
             command.arg("Grapple Animations");
         }
-        if method == "send" {
+        if ["send", "complete", "fail"].contains(&method) {
             command.arg("-");
         }
         let mut child = command
@@ -49,7 +53,7 @@ fn native_client_routes_named_tasks_and_multiline_stdin_without_opening_a_gui() 
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        if method == "send" {
+        if ["send", "complete", "fail"].contains(&method) {
             child
                 .stdin
                 .take()

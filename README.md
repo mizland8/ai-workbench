@@ -54,7 +54,7 @@ Right-click a chat in the sidebar (or its pane header/tab) to **Rename…** or *
 
 On the parent, choose **Delegation instructions… → insert into chat**, then press Enter to give the AI the instructions. You can then say, for example: “Work on the wrestling game. Delegate animation tasks only to the chat named Animations.” Give these instructions once per conversation. Both parent and helper must be open in this version of Workbench.
 
-The AI can list connected chats, submit prompts to their existing terminals, and inspect their output. A parent can address descendants; a helper can also address its immediate parent. Names must match exactly and be unique among connected chats; IDs disambiguate duplicate names. Renaming updates routing immediately. **AI handoffs…** shows the last 100 submitted prompts during the current app session.
+The AI can list connected chats, submit prompts to their existing terminals, and inspect their output. A parent can address descendants; a helper can also address its immediate parent. Names must match exactly and be unique among connected chats; IDs disambiguate duplicate names. Renaming updates routing immediately. **AI handoffs…** shows saved tasks and their worker reports.
 
 Each live AI terminal receives a private bridge credential and the `AI_WORKBENCH_CLI` executable path. The bridge runs locally and credentials expire when the terminal closes. The AI's usual command/sandbox permissions still apply; a CLI may ask you to permit its first bridge command. On macOS/Linux, its commands are:
 
@@ -65,7 +65,22 @@ Each live AI terminal receives a private bridge credential and the `AI_WORKBENCH
 "$AI_WORKBENCH_CLI" bridge read "Animations"
 ```
 
-In PowerShell use `& $env:AI_WORKBENCH_CLI bridge list` and the equivalent `send`/`read` commands. For multiline prompts, `bridge send "Animations" -` reads stdin. Commands return JSON; failures return a nonzero exit code. `send` confirms submission, not task completion. `read` returns the last 250 terminal lines (up to 64,000 characters), which may include earlier replies and prompts. Helpers can report back with `bridge send` when their parent is idle, or the parent can poll their output.
+In PowerShell use `& $env:AI_WORKBENCH_CLI bridge list` and the equivalent `send`/`read` commands. For multiline prompts, `bridge send "Animations" -` reads stdin. Commands return JSON; failures return a nonzero exit code. `send` confirms submission, not task completion. `read` returns the last 250 terminal lines (up to 64,000 characters), which may include earlier replies and prompts. Tracked prompts are limited to 31,500 characters to leave room for reporting instructions. Every `send` returns a `taskId` and includes reporting instructions in the helper's prompt. Use the following commands to track the assignment:
+
+```bash
+"$AI_WORKBENCH_CLI" bridge tasks
+"$AI_WORKBENCH_CLI" bridge task <task-id>
+# Assigned worker, even while the requesting AI is busy:
+"$AI_WORKBENCH_CLI" bridge complete <task-id> "Changed animations.gd; checks passed."
+"$AI_WORKBENCH_CLI" bridge fail <task-id> "Blocked by missing assets."
+# Requesting AI:
+"$AI_WORKBENCH_CLI" bridge inbox
+"$AI_WORKBENCH_CLI" bridge ack <task-id>
+```
+
+`complete` and `fail` also accept `-` for multiline stdin. Reports stay in the inbox until acknowledged; each inbox response returns up to five reports. `tasks` returns summaries, while `task` returns the prompt and full report. Completion is a worker's claim: the parent should review files and checks. No reply is automatically typed into a busy terminal.
+
+Task history is saved in local webview storage and survives app restarts. Workbench keeps up to 200 tasks, evicting only acknowledged final reports when it needs room. If storage cannot be saved, it refuses new assignments or reports. A task left `dispatching` or `delivery_unknown` has uncertain delivery: inspect the terminal before retrying. Workbench never automatically replays it. Task access is limited to its participants and rechecks the current chat hierarchy. Closing a helper does not erase its report.
 
 Handoffs are refused while a helper is working, requesting approval, at an unrecognized screen, still settling, or has manually typed input. Readiness is inferred from each CLI's terminal screen, so CLI changes can require pattern updates. Approval prompts remain for you to answer. The AIs share project files; assign separate files or tasks and have the parent review changes.
 

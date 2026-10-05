@@ -2,6 +2,7 @@ import './styles.css';
 import * as store from './store.js';
 import * as backend from './backend.js';
 import { handleDelegation } from './delegation.js';
+import { TaskLedger } from './task-ledger.js';
 import { toolInfo, describeStatus } from './tools.js';
 import { TerminalView, isMac } from './terminal.js';
 import { THEMES, THEME_LIST, THEME_GROUPS, DEFAULT_THEME, FONT_LIST } from './themes.js';
@@ -20,6 +21,9 @@ let homePath = '';
 const missingFolders = new Set();
 const panes = new Map();
 const handoffs = [];
+let taskLedger;
+try { taskLedger = new TaskLedger(localStorage); }
+catch (error) { notice = `AI task tracking unavailable: ${error.message}`; }
 let refreshToolsDialog = null;
 // The chosen font is used once its files have loaded; until then the system font stands in.
 let currentFont = fontFamily('system');
@@ -1130,7 +1134,7 @@ function parentDialog(id) {
 }
 
 function delegationDialog(id) {
-  const instructions = 'Use AI Workbench to delegate tasks when appropriate. First run the executable named by the AI_WORKBENCH_CLI environment variable with arguments "bridge help", then "bridge list". On macOS/Linux: "$AI_WORKBENCH_CLI" bridge help. On Windows PowerShell: & $env:AI_WORKBENCH_CLI bridge help. Address only the connected chat names or IDs I authorize. Send tasks with bridge send and inspect results with bridge read. Coordinate file ownership and review changes. Never answer another AI’s approval prompts. Do not print or share AI_WORKBENCH_TOKEN.';
+  const instructions = 'Use AI Workbench to delegate tasks when appropriate. First run the executable named by the AI_WORKBENCH_CLI environment variable with arguments "bridge help", then "bridge list". On macOS/Linux: "$AI_WORKBENCH_CLI" bridge help. On Windows PowerShell: & $env:AI_WORKBENCH_CLI bridge help. Address only the connected chat names or IDs I authorize. Send tasks with bridge send, inspect them with bridge tasks/task, and read worker reports with bridge inbox. Report your assigned tasks with bridge complete or bridge fail. Acknowledge reviewed reports with bridge ack. Use bridge read for terminal output. Coordinate file ownership and review changes. Never answer another AI’s approval prompts. Do not print or share AI_WORKBENCH_TOKEN.';
   showDialog(`<h2>AI delegation</h2><p class="dialog-note">Right-click a chat → Open AI under this chat to connect a helper, or move an existing AI under this one. Give the parent these instructions once per conversation, then tell it which helpers to use.</p>
     <p class="form-error" hidden></p><label>Instructions<textarea rows="8" readonly>${escape(instructions)}</textarea></label>
     <p class="dialog-note">Insert these into the chat, then press Enter to send. After that you can say: “Delegate animation work only to the chat named Animations.”</p>
@@ -1145,7 +1149,7 @@ function delegationDialog(id) {
 }
 
 function handoffDialog() {
-  showDialog(`<h2>AI handoffs</h2><p class="dialog-note">Prompts submitted during this app session.</p>${handoffs.length ? handoffs.slice().reverse().map(h => `<details><summary>${escape(h.from)} → ${escape(h.to)} · ${escape(new Date(h.at).toLocaleTimeString())}</summary><pre class="handoff-prompt">${escape(h.prompt)}</pre></details>`).join('') : '<p>No tasks have been sent yet.</p>'}<div class="dialog-actions"><button type="button" data-dismiss>close</button></div>`);
+  showDialog(`<h2>AI handoffs</h2><p class="dialog-note">Tracked tasks and worker reports are saved on this computer. Completion is reported by the worker; review its changes and checks.</p>${taskLedger?.tasks.length ? taskLedger.tasks.slice().reverse().map(t => `<details><summary>${escape(chatById(t.fromId)?.title ?? t.fromId)} → ${escape(chatById(t.toId)?.title ?? t.toId)} · ${escape(t.status)}</summary><p>Task ${escape(t.id)}</p><pre class="handoff-prompt">${escape(t.prompt)}</pre>${t.result ? `<pre class="handoff-prompt">${escape(t.result)}</pre>` : ''}</details>`).join('') : handoffs.length ? handoffs.slice().reverse().map(h => `<details><summary>${escape(h.from)} → ${escape(h.to)} · ${escape(new Date(h.at).toLocaleTimeString())}</summary><pre class="handoff-prompt">${escape(h.prompt)}</pre></details>`).join('') : '<p>No tasks have been sent yet.</p>'}<div class="dialog-actions"><button type="button" data-dismiss>close</button></div>`);
 }
 
 async function attachFiles(id) {
@@ -1326,12 +1330,15 @@ for (const area of ['#panes', '#dock']) {
   }, true);
 }
 $('#dock-resizer').addEventListener('pointerdown', event => { event.preventDefault(); startDockResize(event); });
-backend.resetTerminals().then(() => backend.listenDelegation(request => handleDelegation(state, panes, request, handoff => {
-  handoffs.push(handoff);
-  if (handoffs.length > 100) handoffs.shift();
-  notice = `AI handoff: ${handoff.from} → ${handoff.to}`;
-  renderStatus();
-}))).catch(error => { notice = `AI delegation unavailable: ${error}`; }).finally(() => {
+backend.resetTerminals().then(() => backend.listenDelegation(request => {
+  if (!taskLedger) throw new Error('Task storage is unavailable; no prompt was sent.');
+  return handleDelegation(state, panes, request, handoff => {
+    handoffs.push(handoff);
+    if (handoffs.length > 100) handoffs.shift();
+    notice = `AI handoff: ${handoff.from} → ${handoff.to}`;
+    renderStatus();
+  }, taskLedger);
+})).catch(error => { notice = `AI delegation unavailable: ${error}`; }).finally(() => {
   render();
   watchUsage();
   backend.homeDir().then(path => { homePath = path; render(); });
