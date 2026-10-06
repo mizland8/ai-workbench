@@ -1,6 +1,6 @@
 [package]
 name = "ai-workbench"
-version = "0.2.7"
+version = "0.2.8"
 description = "Run AI coding agents side by side in your project folders"
 authors = ["AI Workbench contributors"]
 license = "MIT"

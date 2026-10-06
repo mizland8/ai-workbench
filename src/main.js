@@ -1,8 +1,9 @@
 import './styles.css';
 import * as store from './store.js';
 import * as backend from './backend.js';
-import { handleDelegation } from './delegation.js';
+import { handleDelegation, briefing } from './delegation.js';
 import { TaskLedger } from './task-ledger.js';
+import { ProjectBoard } from './board.js';
 import { toolInfo, describeStatus } from './tools.js';
 import { TerminalView, isMac } from './terminal.js';
 import { THEMES, THEME_LIST, THEME_GROUPS, DEFAULT_THEME, FONT_LIST } from './themes.js';
@@ -24,6 +25,12 @@ const handoffs = [];
 let taskLedger;
 try { taskLedger = new TaskLedger(localStorage); }
 catch (error) { notice = `AI task tracking unavailable: ${error.message}`; }
+let projectBoard;
+try { projectBoard = new ProjectBoard(localStorage); }
+catch (error) { notice = `AI project board unavailable: ${error.message}`; }
+// A worker's report is saved at once. Its requester hears about it the next time its prompt is
+// free, so a notice never types into a busy AI, an approval question or the user's draft.
+const reportNotices = new Map();
 let refreshToolsDialog = null;
 // The chosen font is used once its files have loaded; until then the system font stands in.
 let currentFont = fontFamily('system');
@@ -341,7 +348,8 @@ class Pane {
       knownSessions: state.chats.filter(c => c.id !== chat.id && c.sessionId).map(c => c.sessionId),
       cwd: projectPath(chat) || null, toolPath: state.toolPaths[engine] ?? null,
       local: local ? { server: chat.server, model: chat.model } : null,
-      extraArgs: shell || local ? [] : store.splitArgs(state.settings.toolArgs[chat.tool] ?? '') })
+      extraArgs: shell || local ? [] : store.splitArgs(state.settings.toolArgs[chat.tool] ?? ''),
+      briefing: shell ? null : briefing(state, chat.id) })
       .then(() => this.view.status === 'running' && this.chatId === page().active && this.visible && this.view.focus());
   }
 
@@ -1127,17 +1135,17 @@ function parentDialog(id) {
   const descendants = new Set(store.chatTree(state.chats, id).map(({ chat }) => chat.id));
   const candidates = state.chats.filter(c => c.id !== id && !descendants.has(c.id) && c.projectId === chat.projectId && store.DELEGATION_TOOLS.includes(c.tool));
   showDialog(`<h2>Move ${escape(chat.title)}</h2><label>Parent AI<select name="parent"><option value="">None (top level)</option>${candidates.map(c => `<option value="${escape(c.id)}" ${c.id === chat.parentId ? 'selected' : ''}>${escape(c.title)} · ${escape(toolInfo[c.tool].name)}</option>`).join('')}</select></label>
-    <p class="dialog-note">The parent and its ancestors can delegate tasks to this chat. This chat can send replies to its parent.</p>
+    <p class="dialog-note">The parent leads this chat. Every AI chat in the project can message and delegate to every other one; the tree shows who leads whom.</p>
     <div class="dialog-actions"><button type="button" data-dismiss>cancel</button><button type="submit" class="primary">move</button></div>`, {
     onSubmit: data => { chat.parentId = String(data.get('parent')) || null; update(); },
   });
 }
 
 function delegationDialog(id) {
-  const instructions = 'Use AI Workbench to delegate tasks when appropriate. First run the executable named by the AI_WORKBENCH_CLI environment variable with arguments "bridge help", then "bridge list". On macOS/Linux: "$AI_WORKBENCH_CLI" bridge help. On Windows PowerShell: & $env:AI_WORKBENCH_CLI bridge help. Address only the connected chat names or IDs I authorize. Send tasks with bridge send, inspect them with bridge tasks/task, and read worker reports with bridge inbox. Report your assigned tasks with bridge complete or bridge fail. Acknowledge reviewed reports with bridge ack. Use bridge read for terminal output. Coordinate file ownership and review changes. Never answer another AI’s approval prompts. Do not print or share AI_WORKBENCH_TOKEN.';
-  showDialog(`<h2>AI delegation</h2><p class="dialog-note">Right-click a chat → Open AI under this chat to connect a helper, or move an existing AI under this one. Give the parent these instructions once per conversation, then tell it which helpers to use.</p>
+  const instructions = 'Work with the other AI chats in this AI Workbench project. Run the executable named by the AI_WORKBENCH_CLI environment variable with the arguments bridge help, then bridge list. On macOS/Linux: "$AI_WORKBENCH_CLI" bridge list. On Windows PowerShell: & $env:AI_WORKBENCH_CLI bridge list. Stay in this project’s folder. Share what you are doing and which files you own with bridge post, and read teammates’ notes with bridge board. Send tasks with bridge send, inspect them with bridge tasks/task, and read reports with bridge inbox, then bridge ack. Report tasks given to you with bridge complete or bridge fail. Quote exact bridge errors; never claim a teammate did not respond without checking bridge list, tasks and read. Never answer another AI’s approval prompts. Do not print or share AI_WORKBENCH_TOKEN.';
+  showDialog(`<h2>AI delegation</h2><p class="dialog-note">Every AI chat in a project can reach the others; each one is told its project, its team and these commands when it starts. Use this to remind a chat mid-conversation. Right-click a chat → Open AI under this chat, or move one under another, to show who leads.</p>
     <p class="form-error" hidden></p><label>Instructions<textarea rows="8" readonly>${escape(instructions)}</textarea></label>
-    <p class="dialog-note">Insert these into the chat, then press Enter to send. After that you can say: “Delegate animation work only to the chat named Animations.”</p>
+    <p class="dialog-note">Insert these into the chat, then press Enter to send. After that you can say: “Ask Codex to review what Claude changed.”</p>
     <div class="dialog-actions"><button type="button" data-dismiss>close</button><button type="submit" class="primary">insert into chat</button></div>`, {
     onSubmit: (_, form) => {
       const pane = panes.get(id);
@@ -1148,8 +1156,14 @@ function delegationDialog(id) {
   });
 }
 
+function boardHtml() {
+  const notes = projectBoard?.notes.slice(-30).reverse() ?? [];
+  if (!notes.length) return '';
+  return `<h3>Project board</h3>${notes.map(n => `<details><summary>${escape(projectById(n.projectId)?.name ?? 'Removed project')} · ${escape(n.fromName)} · ${escape(new Date(n.at).toLocaleString())}</summary><pre class="handoff-prompt">${escape(n.text)}</pre></details>`).join('')}`;
+}
+
 function handoffDialog() {
-  showDialog(`<h2>AI handoffs</h2><p class="dialog-note">Tracked tasks and worker reports are saved on this computer. Completion is reported by the worker; review its changes and checks.</p>${taskLedger?.tasks.length ? taskLedger.tasks.slice().reverse().map(t => `<details><summary>${escape(chatById(t.fromId)?.title ?? t.fromId)} → ${escape(chatById(t.toId)?.title ?? t.toId)} · ${escape(t.status)}</summary><p>Task ${escape(t.id)}</p><pre class="handoff-prompt">${escape(t.prompt)}</pre>${t.result ? `<pre class="handoff-prompt">${escape(t.result)}</pre>` : ''}</details>`).join('') : handoffs.length ? handoffs.slice().reverse().map(h => `<details><summary>${escape(h.from)} → ${escape(h.to)} · ${escape(new Date(h.at).toLocaleTimeString())}</summary><pre class="handoff-prompt">${escape(h.prompt)}</pre></details>`).join('') : '<p>No tasks have been sent yet.</p>'}<div class="dialog-actions"><button type="button" data-dismiss>close</button></div>`);
+  showDialog(`<h2>AI handoffs</h2><p class="dialog-note">Tracked tasks and worker reports are saved on this computer. Completion is reported by the worker; review its changes and checks.</p>${taskLedger?.tasks.length ? taskLedger.tasks.slice().reverse().map(t => `<details><summary>${escape(chatById(t.fromId)?.title ?? t.fromId)} → ${escape(chatById(t.toId)?.title ?? t.toId)} · ${escape(t.status)}</summary><p>Task ${escape(t.id)}</p><pre class="handoff-prompt">${escape(t.prompt)}</pre>${t.result ? `<pre class="handoff-prompt">${escape(t.result)}</pre>` : ''}</details>`).join('') : handoffs.length ? handoffs.slice().reverse().map(h => `<details><summary>${escape(h.from)} → ${escape(h.to)} · ${escape(new Date(h.at).toLocaleTimeString())}</summary><pre class="handoff-prompt">${escape(h.prompt)}</pre></details>`).join('') : '<p>No tasks have been sent yet.</p>'}${boardHtml()}<div class="dialog-actions"><button type="button" data-dismiss>close</button></div>`);
 }
 
 async function attachFiles(id) {
@@ -1330,6 +1344,19 @@ for (const area of ['#panes', '#dock']) {
   }, true);
 }
 $('#dock-resizer').addEventListener('pointerdown', event => { event.preventDefault(); startDockResize(event); });
+function deliverReportNotices() {
+  for (const [chatId, ids] of reportNotices) {
+    const view = panes.get(chatId)?.view;
+    if (!view || view.status !== 'running' || view.promptProblem()) continue;
+    reportNotices.delete(chatId);
+    const reports = [...ids].map(id => taskLedger?.tasks.find(t => t.id === id)).filter(t => t && !t.acknowledged);
+    if (!reports.length) continue;
+    const text = `[AI Workbench] ${reports.map(t => `${chatById(t.toId)?.title ?? 'A teammate'} ${t.status} task ${t.id}`).join('; ')}. Read the report with bridge inbox, review it, then bridge ack.`;
+    view.submitPrompt(text).catch(() => reportNotices.set(chatId, new Set([...(reportNotices.get(chatId) ?? []), ...ids])));
+  }
+}
+setInterval(deliverReportNotices, 3000);
+
 backend.resetTerminals().then(() => backend.listenDelegation(request => {
   if (!taskLedger) throw new Error('Task storage is unavailable; no prompt was sent.');
   return handleDelegation(state, panes, request, handoff => {
@@ -1337,7 +1364,15 @@ backend.resetTerminals().then(() => backend.listenDelegation(request => {
     if (handoffs.length > 100) handoffs.shift();
     notice = `AI handoff: ${handoff.from} → ${handoff.to}`;
     renderStatus();
-  }, taskLedger);
+  }, taskLedger, {
+    board: projectBoard,
+    onReport: task => {
+      reportNotices.set(task.fromId, new Set([...(reportNotices.get(task.fromId) ?? []), task.id]));
+      notice = `AI report: ${chatById(task.toId)?.title ?? 'worker'} → ${chatById(task.fromId)?.title ?? 'requester'} (${task.status})`;
+      renderStatus();
+      setTimeout(deliverReportNotices, 0);
+    },
+  });
 })).catch(error => { notice = `AI delegation unavailable: ${error}`; }).finally(() => {
   render();
   watchUsage();

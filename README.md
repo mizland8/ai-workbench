@@ -48,21 +48,25 @@ A chat can also use a model you run yourself in LM Studio, Ollama, or another se
 - **Keys.** Shift+Enter adds a new line. Ctrl+C copies selected text and otherwise interrupts, Ctrl+Shift+C always copies, and Ctrl+V pastes text (an image on the clipboard is passed to the CLI). Ctrl+Tab moves between chats on the page.
 - **Files.** Drop files onto a chat, or use "+ file" (or "Insert file paths…" in the chat's menu), to insert their paths into the prompt.
 
-## AI delegation and chat hierarchy
+## AI teamwork, delegation and chat hierarchy
 
 Right-click a chat in the sidebar (or its pane header/tab) to **Rename…** or **Open AI under this chat ›**, then pick an AI and give the helper a name such as `Animations`. The helper opens below its parent and runs in the same project folder. **Move under another AI…** connects an existing chat or returns it to the top level. Removing a parent keeps its children and moves them up one level.
 
-On the parent, choose **Delegation instructions… → insert into chat**, then press Enter to give the AI the instructions. You can then say, for example: “Work on the wrestling game. Delegate animation tasks only to the chat named Animations.” Give these instructions once per conversation. Both parent and helper must be open in this version of Workbench.
+Every AI chat in a project can reach every other AI chat in that project: Claude Code, Codex, Antigravity CLI and OpenCode work as one team. The tree shows who leads whom; it does not limit who may talk. Chats in other projects are out of reach, and chats outside any project reach only their parent and the chats under them.
 
-The AI can list connected chats, submit prompts to their existing terminals, and inspect their output. A parent can address descendants; a helper can also address its immediate parent. Names must match exactly and be unique among connected chats; IDs disambiguate duplicate names. Renaming updates routing immediately. **AI handoffs…** shows saved tasks and their worker reports.
+When an AI chat starts, Workbench tells it its name, its project and folder, its lead, its team, and the bridge commands, and asks it to stay in that project. Claude Code receives this through `--append-system-prompt`, Codex through `-c developer_instructions=…`, and Antigravity CLI through an `AGENTS.md` in a Workbench folder added with `--add-dir`. Your own settings and project files are not changed. OpenCode has no such option yet; use **Delegation instructions… → insert into chat** for it, or to remind any chat mid-conversation. You can then say, for example: “Ask Codex to review what Claude changed.” Both chats must be open in Workbench.
 
-Each live AI terminal receives a private bridge credential and the `AI_WORKBENCH_CLI` executable path. The bridge runs locally and credentials expire when the terminal closes. The AI's usual command/sandbox permissions still apply; a CLI may ask you to permit its first bridge command. On macOS/Linux, its commands are:
+The AI can list its team, submit prompts to their existing terminals, inspect their output, and share notes on the project board. `bridge list` shows you, your project and folder, and every AI chat in the project with its lead, its relation to you, its status, its open tasks and its latest board note. Names must match exactly and be unique within the project; IDs disambiguate duplicate names. Renaming updates routing immediately. **AI handoffs…** shows saved tasks and their worker reports.
+
+Each live AI terminal receives a private bridge credential and the `AI_WORKBENCH_CLI` executable path. The bridge runs locally and credentials expire when the terminal closes. The AI's usual command/sandbox permissions still apply; a CLI may ask you to permit its first bridge command. Codex's sandbox blocks every network connection, even to this computer, so when the direct connection is refused the bridge command leaves its request in a private temporary folder (`AI_WORKBENCH_SPOOL`) that Workbench answers; Codex's sandbox stays on. On macOS/Linux, its commands are:
 
 ```bash
 "$AI_WORKBENCH_CLI" bridge help
 "$AI_WORKBENCH_CLI" bridge list
 "$AI_WORKBENCH_CLI" bridge send "Animations" "Implement the grapple animation; edit only the animation files."
 "$AI_WORKBENCH_CLI" bridge read "Animations"
+"$AI_WORKBENCH_CLI" bridge post "Claude: I own src/animations; starting the grapple."
+"$AI_WORKBENCH_CLI" bridge board
 ```
 
 In PowerShell use `& $env:AI_WORKBENCH_CLI bridge list` and the equivalent `send`/`read` commands. For multiline prompts, `bridge send "Animations" -` reads stdin. Commands return JSON; failures return a nonzero exit code. `send` confirms submission, not task completion. `read` returns the last 250 terminal lines (up to 64,000 characters), which may include earlier replies and prompts. Tracked prompts are limited to 31,500 characters to leave room for reporting instructions. Every `send` returns a `taskId` and includes reporting instructions in the helper's prompt. Use the following commands to track the assignment:
@@ -78,9 +82,9 @@ In PowerShell use `& $env:AI_WORKBENCH_CLI bridge list` and the equivalent `send
 "$AI_WORKBENCH_CLI" bridge ack <task-id>
 ```
 
-`complete` and `fail` also accept `-` for multiline stdin. Reports stay in the inbox until acknowledged; each inbox response returns up to five reports. `tasks` returns summaries, while `task` returns the prompt and full report. Completion is a worker's claim: the parent should review files and checks. No reply is automatically typed into a busy terminal.
+`complete` and `fail` also accept `-` for multiline stdin. Reports stay in the inbox until acknowledged; each inbox response returns up to five reports. `tasks` returns summaries, while `task` returns the prompt and full report. Completion is a worker's claim: the parent should review files and checks. When a report arrives, the requester gets a one-line notice telling it to run `bridge inbox`, typed only once its prompt is free; nothing is typed into a busy terminal, an approval question or your draft. The project board keeps the latest 100 notes per project and survives restarts; **AI handoffs…** shows them too.
 
-Task history is saved in local webview storage and survives app restarts. Workbench keeps up to 200 tasks, evicting only acknowledged final reports when it needs room. If storage cannot be saved, it refuses new assignments or reports. A task left `dispatching` or `delivery_unknown` has uncertain delivery: inspect the terminal before retrying. Workbench never automatically replays it. Task access is limited to its participants and rechecks the current chat hierarchy. Closing a helper does not erase its report.
+Task history is saved in local webview storage and survives app restarts. Workbench keeps up to 200 tasks, evicting only acknowledged final reports when it needs room. If storage cannot be saved, it refuses new assignments or reports. A task left `dispatching` or `delivery_unknown` has uncertain delivery: inspect the terminal before retrying. Workbench never automatically replays it. Task access is limited to its participants and rechecks that both are still in the same project. Closing a helper does not erase its report.
 
 Handoffs are refused while a helper is working, requesting approval, at an unrecognized screen, still settling, or has manually typed input. Readiness is inferred from each CLI's terminal screen, so CLI changes can require pattern updates. Approval prompts remain for you to answer. The AIs share project files; assign separate files or tasks and have the parent review changes.
 

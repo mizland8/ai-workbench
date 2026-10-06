@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as store from '../src/store.js';
-import { handleDelegation, resolveTarget } from '../src/delegation.js';
+import { handleDelegation, resolveTarget, briefing } from '../src/delegation.js';
+import { ProjectBoard } from '../src/board.js';
 
 function setup() {
   const state = store.emptyState();
@@ -32,20 +33,28 @@ test('invalid parents and cycles cannot hide chats or connect projects', () => {
   assert.throws(() => store.addChat(state, 'agy', p2.id, 'Wrong', null, child.id));
   assert.throws(() => store.addChat(state, 'shell', child.projectId, 'Shell', null, child.id));
 });
-test('only descendants and the immediate parent can be addressed', async () => {
+test('every AI chat in a project reaches every other one; other projects stay out', async () => {
   const { state, parent, child, grandchild, other, panes, request } = setup();
-  assert.deepEqual(store.delegationTargets(state, parent.id).map(c => c.id), [child.id, grandchild.id]);
-  assert.deepEqual(store.delegationTargets(state, child.id).map(c => c.id), [parent.id, grandchild.id]);
+  assert.deepEqual(store.delegationTargets(state, parent.id).map(c => c.id), [child.id, grandchild.id, other.id]);
+  assert.deepEqual(store.delegationTargets(state, other.id).map(c => c.id), [parent.id, child.id, grandchild.id]);
   const listed = await handleDelegation(state, panes, request('list'));
-  assert.deepEqual(listed.chats.map(c => c.name), ['Animations', 'Review']);
-  await assert.rejects(handleDelegation(state, panes, request('send', other.id)), /No connected/);
-  await assert.rejects(handleDelegation(state, panes, request('read', other.title)), /No connected/);
+  assert.equal(listed.you.name, 'Lead');
+  assert.equal(listed.project.name, 'Wrestling');
+  assert.deepEqual(listed.chats.map(c => [c.name, c.relation]), [['Animations', 'reports to you'], ['Review', 'under you'], ['Unconnected', 'teammate']]);
+  assert.equal(listed.chats[1].parentName, 'Animations');
+  await handleDelegation(state, panes, request('send', other.id, 'Review the grapple'));
+  assert.equal(other.received, 'Review the grapple');
+  const away = store.addChat(state, 'claude', store.addProject(state, 'Elsewhere', '/elsewhere').id, 'Outsider');
+  panes.set(away.id, { display: 'ready', view: { id: 99, status: 'running' } });
+  await assert.rejects(handleDelegation(state, panes, request('read', away.title)), /No AI chat in this project/);
+  const loose = store.addChat(state, 'codex', null, 'Loose');
+  assert.deepEqual(store.delegationTargets(state, loose.id), []);
 });
 test('a unique renamed chat resolves; ambiguous names require IDs', () => {
   const { state, parent, child, grandchild } = setup();
   child.title = 'Grapples';
   assert.equal(resolveTarget(state, parent.id, 'Grapples').id, child.id);
-  assert.throws(() => resolveTarget(state, parent.id, 'Animations'));
+  assert.throws(() => resolveTarget(state, parent.id, 'Animations'), /No AI chat/);
   grandchild.title = child.title;
   assert.throws(() => resolveTarget(state, parent.id, 'Grapples'), /Several/);
   assert.equal(resolveTarget(state, parent.id, child.id).id, child.id);
@@ -119,13 +128,15 @@ test('tracked handoffs survive restart and workers report while their parent is 
   assert.equal(inbox.reports.length, 0);
   await assert.rejects(handleDelegation(state, panes, { ...report, prompt: 'Different result' }, () => {}, restored), /final report/);
 });
-test('task reports are scoped to assigned participants and current hierarchy', async () => {
+test('task reports are scoped to assigned participants and the current project', async () => {
   const { state, parent, child, grandchild, panes, request } = setup();
   const ledger = new TaskLedger(taskStorage());
   const { taskId } = await handleDelegation(state, panes, request('send'), () => {}, ledger);
   await assert.rejects(handleDelegation(state, panes, request('complete', taskId, 'done'), () => {}, ledger), /assigned worker/);
   await assert.rejects(handleDelegation(state, panes, { source: { chatId: grandchild.id, terminalId: 3 }, method: 'task', target: taskId }, () => {}, ledger), /accessible/);
   child.parentId = null;
+  assert.equal((await handleDelegation(state, panes, request('tasks'), () => {}, ledger)).tasks.length, 1);
+  child.projectId = store.addProject(state, 'Elsewhere', '/elsewhere').id;
   assert.equal((await handleDelegation(state, panes, request('tasks'), () => {}, ledger)).tasks.length, 0);
 });
 test('storage failure prevents dispatch and uncertain delivery is never replayed', async () => {
@@ -176,4 +187,46 @@ test('tracked prompt size reserves space for reporting instructions', async () =
   assert.equal(ledger.tasks.length, 0);
   await handleDelegation(state, panes, request('send', child.id, 'x'.repeat(31500)), () => {}, ledger);
   assert.ok(child.received.length <= 32000);
+});
+
+test('the project board shares notes within a project and survives restart', async () => {
+  const { state, parent, child, panes, request } = setup();
+  const storage = taskStorage();
+  const board = new ProjectBoard(storage);
+  const posted = await handleDelegation(state, panes, { ...request('post', ''), prompt: 'I own animations.gd; starting grapples.' }, () => {}, null, { board });
+  assert.equal(posted.posted.fromName, 'Lead');
+  const asChild = { source: { chatId: child.id, terminalId: 2 }, method: 'board' };
+  const read = await handleDelegation(state, panes, asChild, () => {}, null, { board: new ProjectBoard(storage) });
+  assert.deepEqual(read.notes.map(n => n.text), ['I own animations.gd; starting grapples.']);
+  const listed = await handleDelegation(state, panes, { source: asChild.source, method: 'list' }, () => {}, null, { board });
+  assert.equal(listed.chats.find(c => c.id === parent.id).lastNote.text, 'I own animations.gd; starting grapples.');
+  await assert.rejects(handleDelegation(state, panes, { ...request('post', ''), prompt: '  ' }, () => {}, null, { board }), /note/);
+  const other = store.addProject(state, 'Other', '/other');
+  assert.equal(board.read(other.id).length, 0);
+});
+
+test('a worker report notifies its requester and shows in the team list', async () => {
+  const { state, parent, child, panes, request } = setup();
+  const ledger = new TaskLedger(taskStorage());
+  const reports = [];
+  const sent = await handleDelegation(state, panes, request('send'), () => {}, ledger, { onReport: t => reports.push(t) });
+  const listed = await handleDelegation(state, panes, request('list'), () => {}, ledger);
+  assert.equal(listed.chats.find(c => c.id === child.id).openTasks[0].taskId, sent.taskId);
+  const report = { source: { chatId: child.id, terminalId: 2 }, method: 'complete', target: sent.taskId, prompt: 'Done; tests pass.' };
+  await handleDelegation(state, panes, report, () => {}, ledger, { onReport: t => reports.push(t) });
+  assert.deepEqual(reports.map(t => [t.fromId, t.status]), [[parent.id, 'completed']]);
+  assert.equal((await handleDelegation(state, panes, request('list'), () => {}, ledger)).chats.find(c => c.id === child.id).openTasks.length, 0);
+});
+
+test('each AI is briefed on its name, project, lead and team in one shell-safe line', () => {
+  const { state, parent, child } = setup();
+  child.title = 'Anim "fx" & <ui>';
+  const text = briefing(state, child.id);
+  assert.match(text, /named Anim fx ui \(Antigravity CLI\) in the project Wrestling, whose folder is \/games\/wrestling/);
+  assert.match(text, /Your lead is Lead\./);
+  assert.match(text, /Chats under you: Review\./);
+  assert.match(text, /Unconnected \(Antigravity CLI\)/);
+  assert.match(text, /Stay within this project/);
+  assert.doesNotMatch(text, /["%&|<>^`\n]/);
+  assert.equal(briefing(state, store.addChat(state, 'shell', parent.projectId, 'Shell').id), null);
 });

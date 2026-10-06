@@ -563,7 +563,7 @@ try {
   await click('dialog [type=submit]');
   await wait(200);
   const setupInput = await q(`Object.values(__AIW_TEST__.terminals).find(t => t.request.chatId === ${JSON.stringify(lead)}).input.join('')`);
-  check('delegation instructions are inserted into the parent without auto-submission', setupInput.includes('Use AI Workbench') && !setupInput.includes('\r'));
+  check('delegation instructions are inserted into the parent without auto-submission', setupInput.includes('AI Workbench project') && !setupInput.includes('\r'));
 
 } catch (error) {
   check('test run completed', false, String(error.stack ?? error));

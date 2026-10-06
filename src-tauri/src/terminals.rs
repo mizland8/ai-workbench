@@ -107,6 +107,9 @@ pub struct StartRequest {
     /// For a local-model chat (which runs in OpenCode): the model server and model it uses.
     #[serde(default)]
     local: Option<LocalModel>,
+    /// What the AI is told when it starts: its name, project, team and the bridge commands.
+    #[serde(default)]
+    briefing: Option<String>,
     cols: u16,
     rows: u16,
 }
@@ -213,10 +216,56 @@ fn plan(request: &StartRequest) -> Result<Plan, String> {
                 plan.args.extend(["-m".into(), format!("{}/{model}", local_models::PROVIDER)]);
                 plan.env.push(("OPENCODE_CONFIG_CONTENT".into(), local_models::opencode_config(&server, model)));
             }
+            if let (Some(text), Some(chat_id)) = (request.briefing.as_deref(), request.chat_id.as_deref()) {
+                brief(&mut plan, tool, text, chat_id);
+            }
             plan.args.extend(request.extra_args.iter().filter(|a| !a.is_empty()).cloned());
         }
     }
     Ok(plan)
+}
+
+/// Give the AI its briefing the way its CLI takes standing instructions, without changing the
+/// user's own settings or project files: Claude Code appends it to its system prompt, Codex takes
+/// it as developer instructions, and Antigravity CLI reads an AGENTS.md in a folder added to its
+/// workspace. OpenCode has no such option; it can still use the bridge through `bridge help`.
+fn brief(plan: &mut Plan, tool: Tool, text: &str, chat_id: &str) {
+    // One line without quotes or cmd.exe symbols: on Windows an npm-installed CLI is a .cmd script.
+    let text: String = text
+        .chars()
+        .map(|c| if c.is_control() || "\"%&|<>^`".contains(c) { ' ' } else { c })
+        .take(6000)
+        .collect();
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return;
+    }
+    // cmd.exe drops the outer quotes of a quoted script path when another argument is quoted too.
+    let shim = plan.program.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"));
+    if shim && plan.program.to_string_lossy().contains(' ') {
+        return;
+    }
+    match tool {
+        Tool::Claude => plan.args.extend(["--append-system-prompt".into(), text]),
+        // Before any subcommand, so `codex resume` gets it too. A value that isn't TOML is a string.
+        Tool::Codex => {
+            plan.args.splice(0..0, ["-c".to_string(), format!("developer_instructions={text}")]);
+        }
+        Tool::Agy => {
+            if chat_id.is_empty() || !chat_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+                return;
+            }
+            let dir = std::env::temp_dir().join("ai-workbench-briefings").join(chat_id);
+            if shim && dir.to_string_lossy().contains(' ') {
+                return;
+            }
+            let body = format!("# AI Workbench\n\n{text}\n");
+            if std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join("AGENTS.md"), body)).is_ok() {
+                plan.args.extend(["--add-dir".into(), dir.to_string_lossy().into_owned()]);
+            }
+        }
+        Tool::Opencode => {}
+    }
 }
 
 fn command_for(program: &Path, args: &[String]) -> CommandBuilder {
@@ -267,9 +316,12 @@ fn start_with_bridge(terminals: &Terminals, request: StartRequest, events: Chann
     if request.kind == StartKind::Chat {
         if let (Some(bridge), Some(chat_id)) = (bridge, request.chat_id.as_ref()) {
             let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-            let (address, token) = bridge.register(chat_id.clone(), id);
+            let (address, token, spool) = bridge.register(chat_id.clone(), id);
             cmd.env("AI_WORKBENCH_BRIDGE", address);
             cmd.env("AI_WORKBENCH_TOKEN", token);
+            if let Some(spool) = spool {
+                cmd.env("AI_WORKBENCH_SPOOL", spool);
+            }
             cmd.env("AI_WORKBENCH_CLI", executable);
         }
     }
@@ -446,6 +498,7 @@ mod tests {
             tool_path: Some(std::env::current_exe().unwrap().display().to_string()),
             extra_args: Vec::new(),
             local: None,
+            briefing: None,
             cols: 80,
             rows: 24,
         }
@@ -490,6 +543,27 @@ mod tests {
         assert!(!claude.resumed);
         assert!(claude.discover.is_none());
         assert!(plan(&request(StartKind::Chat, Some(Tool::Claude), Some("not-a-uuid"))).is_err());
+    }
+
+    #[test]
+    fn each_ai_gets_its_briefing_without_touching_user_settings() {
+        let briefed = |tool| {
+            let mut r = request(StartKind::Chat, Some(tool), Some("0b0e0a3c-1111-4222-8333-444455556666"));
+            r.chat_id = Some("chat-1".into());
+            r.briefing = Some("You are Lead in \"Game\"\nUse & bridge list".into());
+            plan(&r).unwrap()
+        };
+        let claude = briefed(Tool::Claude);
+        assert_eq!(claude.args[2..], ["--append-system-prompt".to_string(), "You are Lead in Game Use bridge list".into()]);
+        let codex = briefed(Tool::Codex);
+        assert_eq!(codex.args[..2], ["-c".to_string(), "developer_instructions=You are Lead in Game Use bridge list".into()]);
+        let agy = briefed(Tool::Agy);
+        let at = agy.args.iter().position(|a| a == "--add-dir").unwrap();
+        let file = std::fs::read_to_string(Path::new(&agy.args[at + 1]).join("AGENTS.md")).unwrap();
+        assert!(file.contains("You are Lead in Game Use bridge list"));
+        let mut plain = request(StartKind::Chat, Some(Tool::Codex), None);
+        plain.chat_id = Some("chat-2".into());
+        assert_eq!(plan(&plain).unwrap().args, ["--no-daemon"]);
     }
 
     #[test]
@@ -598,7 +672,7 @@ mod real_cli_tests {
             let events = Channel::new(move |body| { let _ = tx.send(body); Ok(()) });
             let session_id = (tool == Tool::Claude).then(uuid);
             let request = StartRequest { chat_id: None, kind: StartKind::Chat, tool: Some(tool), session_id, known_sessions: Vec::new(),
-                cwd: Some(project.display().to_string()), tool_path: None, extra_args: Vec::new(), local: None, cols: 110, rows: 32 };
+                cwd: Some(project.display().to_string()), tool_path: None, extra_args: Vec::new(), local: None, briefing: None, cols: 110, rows: 32 };
             let started = start(&terminals, request, events).unwrap_or_else(|e| panic!("{tool:?} didn't start: {e}"));
             let mut output = Vec::new();
             let early_exit = collect(&rx, &mut output, |screen| screen.lines().count() >= 6, Duration::from_secs(25));
@@ -634,7 +708,7 @@ mod real_cli_tests {
 
     fn chat(tool: Tool, session_id: Option<String>, project: &Path) -> StartRequest {
         StartRequest { chat_id: None, kind: StartKind::Chat, tool: Some(tool), session_id, known_sessions: Vec::new(),
-            cwd: Some(project.display().to_string()), tool_path: None, extra_args: Vec::new(), local: None, cols: 110, rows: 32 }
+            cwd: Some(project.display().to_string()), tool_path: None, extra_args: Vec::new(), local: None, briefing: None, cols: 110, rows: 32 }
     }
 
     fn open(terminals: &Terminals, request: StartRequest) -> (Started, Receiver<InvokeResponseBody>) {

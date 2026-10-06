@@ -261,9 +261,12 @@ export function chatTree(chats, parentId = null, depth = 0) {
 }
 
 // Delegation follows the hierarchy; a child can also report back to its immediate parent.
+// Every AI chat in a project can reach every other AI chat there, whatever the tree: the tree
+// shows who leads, not who may talk. Chats outside a project reach only their parent and descendants.
 export function delegationTargets(state, sourceId) {
   const source = state.chats.find(c => c.id === sourceId);
   if (!source || !DELEGATION_TOOLS.includes(source.tool)) return [];
+  if (source.projectId) return state.chats.filter(c => c.id !== source.id && DELEGATION_TOOLS.includes(c.tool) && c.projectId === source.projectId);
   const descendants = new Set(chatTree(state.chats, sourceId).map(({ chat }) => chat.id));
   return state.chats.filter(c => DELEGATION_TOOLS.includes(c.tool) && c.projectId === source.projectId && (descendants.has(c.id) || c.id === source.parentId));
 }
