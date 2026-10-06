@@ -1,6 +1,6 @@
 [package]
 name = "ai-workbench"
-version = "0.2.6"
+version = "0.2.7"
 description = "Run AI coding agents side by side in your project folders"
 authors = ["AI Workbench contributors"]
 license = "MIT"
@@ -33,3 +33,4 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }

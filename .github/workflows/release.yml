@@ -77,6 +77,10 @@ jobs:
           includeUpdaterJson: true
           args: --config src-tauri/tauri.release.conf.json ${{ matrix.args }}
 
+      - name: Verify Windows GUI subsystem and bridge CLI
+        if: matrix.platform == 'windows-latest'
+        run: cargo test --manifest-path src-tauri/Cargo.toml --release --features tauri/custom-protocol --test bridge_cli
+
       - name: Sign and attach the plain Linux binary
         if: matrix.platform == 'ubuntu-22.04'
         env:

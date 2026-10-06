@@ -5,6 +5,24 @@ use std::net::TcpListener;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+#[cfg(all(windows, not(debug_assertions)))]
+#[test]
+fn windows_release_is_a_gui_executable() {
+    let bytes = std::fs::read(env!("CARGO_BIN_EXE_ai-workbench")).unwrap();
+    let pe_offset = u32::from_le_bytes(bytes[0x3c..0x40].try_into().unwrap()) as usize;
+    assert_eq!(&bytes[pe_offset..pe_offset + 4], b"PE\0\0");
+    let subsystem_offset = pe_offset + 24 + 68;
+    let subsystem = u16::from_le_bytes(
+        bytes[subsystem_offset..subsystem_offset + 2]
+            .try_into()
+            .unwrap(),
+    );
+    assert_eq!(
+        subsystem, 2,
+        "release must use Windows GUI subsystem, not the console subsystem"
+    );
+}
+
 #[test]
 fn native_client_routes_named_tasks_and_multiline_stdin_without_opening_a_gui() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
