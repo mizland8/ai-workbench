@@ -1,7 +1,8 @@
 //! The AI CLIs this app connects to: finding them, checking sign-in, and how to install them.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
@@ -78,6 +79,28 @@ impl Tool {
             Tool::Opencode => "https://opencode.ai/docs",
         }
     }
+}
+
+static NO_DAEMON: Mutex<Option<(PathBuf, bool)>> = Mutex::new(None);
+
+/// Older Codex needed `--no-daemon` on each pane so it didn't share a background server that
+/// could lag behind an updated CLI ("Cannot use the background server"). Codex later removed
+/// that server, and the flag with it, so passing it is now a hard error; check the installed
+/// CLI's own `--help` instead of assuming either way, since it varies by machine and version.
+pub fn codex_supports_no_daemon(path: &Path) -> bool {
+    if let Some((cached, supported)) = NO_DAEMON.lock().unwrap().as_ref() {
+        if cached == path {
+            return *supported;
+        }
+    }
+    let supported = env::run_captured(env::probe_command(path, &["--help"]), Duration::from_secs(10))
+        .is_some_and(|out| mentions_no_daemon(&out.text()));
+    *NO_DAEMON.lock().unwrap() = Some((path.to_path_buf(), supported));
+    supported
+}
+
+fn mentions_no_daemon(help_text: &str) -> bool {
+    help_text.contains("--no-daemon")
 }
 
 /// Find the CLI: the user's chosen file if they picked one, otherwise the first match on PATH.
@@ -210,6 +233,7 @@ pub async fn detect_tools(tool_paths: HashMap<String, String>, refresh: bool) ->
     tauri::async_runtime::spawn_blocking(move || {
         if refresh {
             env::refresh();
+            *NO_DAEMON.lock().unwrap() = None;
         }
         detect_all(&tool_paths)
     })
@@ -228,6 +252,12 @@ mod tests {
         assert_eq!(parse_version("0.62.0\n").as_deref(), Some("0.62.0"));
         assert_eq!(parse_version("v1.18.34").as_deref(), Some("1.18.34"));
         assert_eq!(parse_version("command not found"), None);
+    }
+
+    #[test]
+    fn recognises_no_daemon_support_from_help_text() {
+        assert!(mentions_no_daemon("Options:\n      --no-daemon\n          Run without a daemon\n"));
+        assert!(!mentions_no_daemon("Options:\n      --no-alt-screen\n          Disable alternate screen mode\n"));
     }
 
     #[test]

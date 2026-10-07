@@ -169,22 +169,27 @@ fn plan(request: &StartRequest) -> Result<Plan, String> {
                     plan.session_id = Some(id);
                     plan.resumed = saved;
                 }
-                // Codex's shared background server can lag behind an updated CLI ("Cannot use the
-                // background server"); each pane runs its own so closing it really stops Codex.
-                Tool::Codex => match known {
-                    Some(id) if sessions::codex_has_session(&id) => {
-                        plan.args = vec!["resume".into(), "--no-daemon".into(), id.clone()];
-                        plan.session_id = Some(id);
-                        plan.resumed = true;
-                    }
-                    previous => {
-                        if previous.is_some() {
-                            plan.notice = Some("The previous Codex conversation wasn't found, so this is a new one.".into());
+                // Older Codex shared a background server that could lag behind an updated CLI
+                // ("Cannot use the background server"); `--no-daemon` made each pane run its own
+                // so closing it really stopped Codex. Newer Codex removed that server and the
+                // flag with it, so only pass it when the installed CLI still understands it.
+                Tool::Codex => {
+                    let no_daemon = tools::codex_supports_no_daemon(&plan.program).then(|| "--no-daemon".to_string());
+                    match known {
+                        Some(id) if sessions::codex_has_session(&id) => {
+                            plan.args = std::iter::once("resume".to_string()).chain(no_daemon.clone()).chain(std::iter::once(id.clone())).collect();
+                            plan.session_id = Some(id);
+                            plan.resumed = true;
                         }
-                        plan.args = vec!["--no-daemon".into()];
-                        plan.discover = Some(Tool::Codex);
+                        previous => {
+                            if previous.is_some() {
+                                plan.notice = Some("The previous Codex conversation wasn't found, so this is a new one.".into());
+                            }
+                            plan.args = no_daemon.into_iter().collect();
+                            plan.discover = Some(Tool::Codex);
+                        }
                     }
-                },
+                }
                 Tool::Agy => match known {
                     Some(id) if sessions::agy_has_session(&id) => {
                         plan.args = vec!["--conversation".into(), id.clone()];
@@ -532,7 +537,8 @@ mod tests {
     fn extra_options_from_settings_are_added() {
         let mut req = request(StartKind::Chat, Some(Tool::Codex), None);
         req.extra_args = vec!["--approve-for-me".into(), "-c".into(), "model_reasoning_effort=max".into()];
-        assert_eq!(plan(&req).unwrap().args, ["--no-daemon", "--approve-for-me", "-c", "model_reasoning_effort=max"]);
+        // The fixture's "CLI" is this test binary, whose `--help` doesn't mention `--no-daemon`.
+        assert_eq!(plan(&req).unwrap().args, ["--approve-for-me", "-c", "model_reasoning_effort=max"]);
     }
 
     #[test]
@@ -569,7 +575,8 @@ mod tests {
     #[test]
     fn codex_and_opencode_look_for_their_new_session() {
         let codex = plan(&request(StartKind::Chat, Some(Tool::Codex), None)).unwrap();
-        assert_eq!(codex.args, ["--no-daemon"]);
+        // The fixture's "CLI" doesn't advertise `--no-daemon` support, so it's left out.
+        assert!(codex.args.is_empty());
         assert_eq!(codex.discover, Some(Tool::Codex));
         let opencode = plan(&request(StartKind::Chat, Some(Tool::Opencode), Some("ses_123"))).unwrap();
         assert_eq!(opencode.args, ["--session", "ses_123"]);
@@ -793,8 +800,11 @@ mod real_cli_tests {
         let project = std::env::temp_dir().join(format!("ai-workbench-codex-{}", std::process::id()));
         std::fs::create_dir_all(&project).unwrap();
 
+        let program = tools::resolve(Tool::Codex, None).unwrap();
+        let supports_no_daemon = tools::codex_supports_no_daemon(&program);
+
         let (first, rx) = open(&terminals, chat(Tool::Codex, None, &project));
-        assert!(first.command.contains("--no-daemon"), "{}", first.command);
+        assert_eq!(first.command.contains("--no-daemon"), supports_no_daemon, "{}", first.command);
         let mut out = Vec::new();
         // Codex draws its prompt first and the folder-trust question over it; the question takes
         // letters as shortcuts, so answer it before typing anything.
@@ -813,14 +823,14 @@ mod real_cli_tests {
         close(&terminals, first.id, &rx);
 
         let (second, rx) = open(&terminals, chat(Tool::Codex, Some(session.clone()), &project));
-        assert!(second.resumed && second.command == format!("codex resume --no-daemon {session}"), "{}", second.command);
+        let expected = if supports_no_daemon { format!("codex resume --no-daemon {session}") } else { format!("codex resume {session}") };
+        assert!(second.resumed && second.command == expected, "{}", second.command);
         let mut out = Vec::new();
         collect(&rx, &mut out, |s| squash(s).contains("Replywithonlythewordpong"), Duration::from_secs(60));
         println!("--- resumed ---\n{}", screen_text(&out));
         assert!(squash(&screen_text(&out)).contains("Replywithonlythewordpong"), "history missing after resume");
         close(&terminals, second.id, &rx);
 
-        let program = tools::resolve(Tool::Codex, None).unwrap();
         let _ = env::run_captured(env::probe_command(&program, &["delete", "--force", &session]), Duration::from_secs(30));
         // Take back the folder-trust entry Codex saved for the temporary folder.
         let config = env::home_dir().join(".codex/config.toml");

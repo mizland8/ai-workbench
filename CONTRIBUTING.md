@@ -40,6 +40,22 @@ The interface is plain JavaScript with no framework; the backend is a small Rust
 | `src-tauri/src/subscriptions.rs` | Reads live Claude and Codex allowances, with login-aware caching, backoff and bounded requests |
 | `e2e/` | Interface tests: the built app in headless Chrome with a fake backend (`mock.js`) |
 
+## Vendor CLI flags change under you
+
+Claude Code, Codex, Antigravity CLI and OpenCode each ship on their own schedule, independent of
+this app, and they remove or rename flags without warning. `--no-daemon` is the example that bit
+us: it was hardcoded onto every Codex pane to dodge an old background-server bug, and once Codex
+removed that server it also removed the flag, so Codex started hard-failing on launch for anyone
+on a newer CLI (`unexpected argument '--no-daemon' found`). Two installs of this app on different
+OSes, or the same OS at different times, can have meaningfully different vendor CLI versions.
+
+Don't hardcode a flag whose presence depends on the vendor CLI's version. Instead, probe the
+installed binary (see `tools::codex_supports_no_daemon`, which checks the CLI's own `--help`
+output and caches the result per path) and only include the flag when the check says it is still
+there. This applies whenever you're tempted to add a version-specific workaround in `terminals.rs`
+or `tools.rs`: check `<tool> --help` against what's actually installed, don't assume last year's
+flags still exist.
+
 ## Adding a CLI
 
 1. **`tools.rs`:** add it to `Tool`, with its name, login arguments, install command, docs link, and a sign-in check if the CLI has one.
