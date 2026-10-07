@@ -251,6 +251,7 @@ fieldset { margin:0 0 12px; padding:6px 14px 12px; border:1px solid var(--border
 legend { padding:0 6px; color:var(--dim); font-size:10px; letter-spacing:.08em; text-transform:uppercase; }
 dialog label.row { flex-direction:row; align-items:center; justify-content:space-between; gap:12px; margin:8px 0; }
 dialog label.row input, dialog label.row select { width:62%; }
+.approval-note { display:block; margin:-4px 0 10px; }
 dialog label.check { flex-direction:row; align-items:flex-start; gap:10px; margin:10px 0; }
 label.check input { margin:2px 0 0; accent-color:var(--accent); }
 label.check span { display:flex; flex-direction:column; gap:2px; }

@@ -24,7 +24,43 @@ const renamedTools = { gemini: 'agy' };
 
 export function defaultSettings() {
   // localServer: where new local-model chats look for models; empty means this computer.
-  return { fontSize: 13, font: DEFAULT_FONT, notifications: true, notifyResets: true, checkUpdates: true, flash: true, reopenChats: true, confirmRemove: true, dockWidth: 460, toolArgs: {}, localServer: '' };
+  // approvals: the approval mode chosen for each AI (see APPROVAL_MODES); codexWindowsSandbox
+  // uses Codex's unelevated Windows sandbox, which keeps working while the Codex app is open.
+  return { fontSize: 13, font: DEFAULT_FONT, notifications: true, notifyResets: true, checkUpdates: true, flash: true, reopenChats: true, confirmRemove: true, dockWidth: 460, toolArgs: {}, localServer: '',
+    approvals: { claude: 'ask', codex: 'ask', agy: 'ask' }, codexWindowsSandbox: true };
+}
+
+// How much each AI may do without asking. `flag` must appear in the CLI's --help for the option
+// to be passed, so a version without it still starts (the chat says it was left out).
+export const APPROVAL_MODES = {
+  claude: [
+    { id: 'ask', name: 'Ask before acting', note: 'Claude Code’s own default.' },
+    { id: 'edits', name: 'Approve file edits', note: 'Edits files without asking; still asks before running commands.', flag: '--permission-mode', args: ['--permission-mode', 'acceptEdits'] },
+    { id: 'auto', name: 'Auto mode', note: 'Claude Code approves actions it judges safe and asks about the rest. Needs a plan that offers auto mode.', flag: '--permission-mode', args: ['--permission-mode', 'auto'] },
+    { id: 'all', name: 'Approve everything', note: 'No checks at all, including commands outside the project. Use with care.', flag: '--dangerously-skip-permissions', args: ['--dangerously-skip-permissions'], risky: true },
+  ],
+  codex: [
+    { id: 'ask', name: 'Ask before acting', note: 'Codex’s own default.' },
+    { id: 'review', name: 'Automatic review', note: 'Codex reviews its own approval requests; commands stay in the sandbox.', flag: '--approve-for-me', args: ['--approve-for-me'] },
+    { id: 'never', name: 'Never ask, stay sandboxed', note: 'Commands run in the sandbox without asking: they can change the project folder but not the rest of the computer or the network.', flag: '--ask-for-approval', args: ['--ask-for-approval', 'never', '--sandbox', 'workspace-write'] },
+    { id: 'all', name: 'Approve everything, no sandbox', note: 'Commands run with your full access to the computer and network. Use with care.', flag: '--dangerously-bypass-approvals-and-sandbox', args: ['--dangerously-bypass-approvals-and-sandbox'], risky: true },
+  ],
+  agy: [
+    { id: 'ask', name: 'Ask before acting', note: 'Antigravity CLI’s own default.' },
+    { id: 'edits', name: 'Approve file edits', note: 'Edits files without asking.', flag: '--mode', args: ['--mode', 'accept-edits'] },
+    { id: 'all', name: 'Approve everything', note: 'Approves every tool request. Use with care.', flag: '--dangerously-skip-permissions', args: ['--dangerously-skip-permissions'], risky: true },
+  ],
+};
+
+export const CODEX_WINDOWS_SANDBOX = { label: 'the unelevated Windows sandbox', flag: '--config', args: ['-c', 'windows.sandbox=unelevated'] };
+
+// The recommended options a chat with this AI starts with, as { label, flag, args }.
+export function toolOptions(settings, tool, { windows = false } = {}) {
+  const options = [];
+  if (tool === 'codex' && windows && settings.codexWindowsSandbox) options.push(CODEX_WINDOWS_SANDBOX);
+  const mode = APPROVAL_MODES[tool]?.find(m => m.id === settings.approvals?.[tool]);
+  if (mode?.args) options.push({ label: `${mode.name.toLowerCase()} (${mode.args.join(' ')})`, flag: mode.flag, args: mode.args });
+  return options;
 }
 
 export function emptyState() {
@@ -48,9 +84,12 @@ function normalizeSettings(value) {
   settings.fontSize = clamp(value.fontSize, 9, 24, settings.fontSize);
   settings.dockWidth = clamp(value.dockWidth, 260, 900, settings.dockWidth);
   if (isText(value.font) && FONTS[value.font]) settings.font = value.font;
-  for (const key of ['notifications', 'notifyResets', 'checkUpdates', 'flash', 'reopenChats', 'confirmRemove']) if (typeof value[key] === 'boolean') settings[key] = value[key];
+  for (const key of ['notifications', 'notifyResets', 'checkUpdates', 'flash', 'reopenChats', 'confirmRemove', 'codexWindowsSandbox']) if (typeof value[key] === 'boolean') settings[key] = value[key];
   if (isObject(value.toolArgs)) {
     for (const tool of AI_TOOLS) if (isText(value.toolArgs[tool]) && value.toolArgs[tool].trim()) settings.toolArgs[tool] = value.toolArgs[tool];
+  }
+  if (isObject(value.approvals)) {
+    for (const [tool, modes] of Object.entries(APPROVAL_MODES)) if (modes.some(m => m.id === value.approvals[tool])) settings.approvals[tool] = value.approvals[tool];
   }
   if (isText(value.localServer)) settings.localServer = value.localServer.trim().slice(0, 200);
   return settings;

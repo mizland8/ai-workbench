@@ -81,26 +81,39 @@ impl Tool {
     }
 }
 
-static NO_DAEMON: Mutex<Option<(PathBuf, bool)>> = Mutex::new(None);
+/// Each CLI's own `--help`, read once per program: what it supports varies by machine and version.
+static HELP: Mutex<Vec<(PathBuf, String)>> = Mutex::new(Vec::new());
+
+fn help_text(path: &Path) -> String {
+    if let Some((_, text)) = HELP.lock().unwrap().iter().find(|(cached, _)| cached == path) {
+        return text.clone();
+    }
+    let text = env::run_captured(env::probe_command(path, &["--help"]), Duration::from_secs(10)).map(|out| out.text()).unwrap_or_default();
+    HELP.lock().unwrap().push((path.to_path_buf(), text.clone()));
+    text
+}
+
+/// Whether the installed CLI lists this option in its `--help`, so an option it doesn't know is
+/// left out instead of stopping the chat from starting.
+pub fn supports_flag(path: &Path, flag: &str) -> bool {
+    mentions_flag(&help_text(path), flag)
+}
 
 /// Older Codex needed `--no-daemon` on each pane so it didn't share a background server that
 /// could lag behind an updated CLI ("Cannot use the background server"). Codex later removed
 /// that server, and the flag with it, so passing it is now a hard error; check the installed
 /// CLI's own `--help` instead of assuming either way, since it varies by machine and version.
 pub fn codex_supports_no_daemon(path: &Path) -> bool {
-    if let Some((cached, supported)) = NO_DAEMON.lock().unwrap().as_ref() {
-        if cached == path {
-            return *supported;
-        }
-    }
-    let supported = env::run_captured(env::probe_command(path, &["--help"]), Duration::from_secs(10))
-        .is_some_and(|out| mentions_no_daemon(&out.text()));
-    *NO_DAEMON.lock().unwrap() = Some((path.to_path_buf(), supported));
-    supported
+    supports_flag(path, "--no-daemon")
 }
 
-fn mentions_no_daemon(help_text: &str) -> bool {
-    help_text.contains("--no-daemon")
+/// A whole-word match, so `--sandbox` isn't found inside `--sandbox-state-json`.
+fn mentions_flag(help_text: &str, flag: &str) -> bool {
+    help_text.match_indices(flag).any(|(at, _)| {
+        let next = help_text[at + flag.len()..].chars().next();
+        let before = help_text[..at].chars().next_back();
+        !next.is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_') && !before.is_some_and(|c| c.is_alphanumeric() || c == '-')
+    })
 }
 
 /// Find the CLI: the user's chosen file if they picked one, otherwise the first match on PATH.
@@ -233,7 +246,7 @@ pub async fn detect_tools(tool_paths: HashMap<String, String>, refresh: bool) ->
     tauri::async_runtime::spawn_blocking(move || {
         if refresh {
             env::refresh();
-            *NO_DAEMON.lock().unwrap() = None;
+            HELP.lock().unwrap().clear();
         }
         detect_all(&tool_paths)
     })
@@ -255,9 +268,15 @@ mod tests {
     }
 
     #[test]
-    fn recognises_no_daemon_support_from_help_text() {
-        assert!(mentions_no_daemon("Options:\n      --no-daemon\n          Run without a daemon\n"));
-        assert!(!mentions_no_daemon("Options:\n      --no-alt-screen\n          Disable alternate screen mode\n"));
+    fn recognises_options_from_help_text() {
+        assert!(mentions_flag("Options:\n      --no-daemon\n          Run without a daemon\n", "--no-daemon"));
+        assert!(!mentions_flag("Options:\n      --no-alt-screen\n          Disable alternate screen mode\n", "--no-daemon"));
+        // Codex lists `-s, --sandbox <SANDBOX_MODE>` and also `--sandbox-state-json`.
+        assert!(mentions_flag("  -s, --sandbox <SANDBOX_MODE>\n", "--sandbox"));
+        assert!(!mentions_flag("      --sandbox-state-json <JSON>\n", "--sandbox"));
+        assert!(mentions_flag("  --permission-mode <mode>  Permission mode", "--permission-mode"));
+        assert!(!mentions_flag("  --permission-mode <mode>", "--mode"));
+        assert!(!mentions_flag("  --mode  Set the agent execution mode", "--permission-mode"));
     }
 
     #[test]

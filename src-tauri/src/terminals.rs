@@ -110,8 +110,18 @@ pub struct StartRequest {
     /// What the AI is told when it starts: its name, project, team and the bridge commands.
     #[serde(default)]
     briefing: Option<String>,
+    /// Recommended options turned on in the settings, each passed only if the CLI lists `flag`.
+    #[serde(default)]
+    options: Vec<ToolOption>,
     cols: u16,
     rows: u16,
+}
+
+#[derive(Deserialize)]
+pub struct ToolOption {
+    label: String,
+    flag: String,
+    args: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -224,6 +234,12 @@ fn plan(request: &StartRequest) -> Result<Plan, String> {
             if let (Some(text), Some(chat_id)) = (request.briefing.as_deref(), request.chat_id.as_deref()) {
                 brief(&mut plan, tool, text, chat_id);
             }
+            let program = plan.program.clone();
+            let skipped = add_options(&mut plan.args, &request.options, |flag| tools::supports_flag(&program, flag));
+            if !skipped.is_empty() {
+                let text = format!("This version of {} doesn't offer {}, so it was left out.", tool.name(), skipped.join(", "));
+                plan.notice = Some(plan.notice.map_or(text.clone(), |n| format!("{n} {text}")));
+            }
             plan.args.extend(request.extra_args.iter().filter(|a| !a.is_empty()).cloned());
         }
     }
@@ -271,6 +287,19 @@ fn brief(plan: &mut Plan, tool: Tool, text: &str, chat_id: &str) {
         }
         Tool::Opencode => {}
     }
+}
+
+/// Add each recommended option the CLI supports; returns the labels of those it doesn't.
+fn add_options(args: &mut Vec<String>, options: &[ToolOption], supports: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut skipped = Vec::new();
+    for option in options.iter().filter(|o| !o.args.is_empty()) {
+        if supports(&option.flag) {
+            args.extend(option.args.iter().cloned());
+        } else {
+            skipped.push(option.label.clone());
+        }
+    }
+    skipped
 }
 
 fn command_for(program: &Path, args: &[String]) -> CommandBuilder {
@@ -504,6 +533,7 @@ mod tests {
             extra_args: Vec::new(),
             local: None,
             briefing: None,
+            options: Vec::new(),
             cols: 80,
             rows: 24,
         }
@@ -552,6 +582,20 @@ mod tests {
     }
 
     #[test]
+    fn recommended_options_are_added_only_when_the_cli_lists_them() {
+        let option = |label: &str, flag: &str, args: &[&str]| ToolOption { label: label.into(), flag: flag.into(), args: args.iter().map(|a| a.to_string()).collect() };
+        let options = [
+            option("the Windows sandbox", "--config", &["-c", "windows.sandbox=unelevated"]),
+            option("automatic approval review", "--approve-for-me", &["--approve-for-me"]),
+            option("nothing", "--anything", &[]),
+        ];
+        let mut args = vec!["resume".to_string(), "abc".into()];
+        let skipped = add_options(&mut args, &options, |flag| flag == "--config");
+        assert_eq!(args, ["resume", "abc", "-c", "windows.sandbox=unelevated"]);
+        assert_eq!(skipped, ["automatic approval review"]);
+    }
+
+    #[test]
     fn each_ai_gets_its_briefing_without_touching_user_settings() {
         let briefed = |tool| {
             let mut r = request(StartKind::Chat, Some(tool), Some("0b0e0a3c-1111-4222-8333-444455556666"));
@@ -569,7 +613,9 @@ mod tests {
         assert!(file.contains("You are Lead in Game Use bridge list"));
         let mut plain = request(StartKind::Chat, Some(Tool::Codex), None);
         plain.chat_id = Some("chat-2".into());
-        assert_eq!(plan(&plain).unwrap().args, ["--no-daemon"]);
+        // No briefing was set, so nothing gets spliced in; the fixture CLI also doesn't
+        // advertise `--no-daemon` support, so args are left empty rather than defaulted.
+        assert!(plan(&plain).unwrap().args.is_empty());
     }
 
     #[test]
@@ -679,7 +725,7 @@ mod real_cli_tests {
             let events = Channel::new(move |body| { let _ = tx.send(body); Ok(()) });
             let session_id = (tool == Tool::Claude).then(uuid);
             let request = StartRequest { chat_id: None, kind: StartKind::Chat, tool: Some(tool), session_id, known_sessions: Vec::new(),
-                cwd: Some(project.display().to_string()), tool_path: None, extra_args: Vec::new(), local: None, briefing: None, cols: 110, rows: 32 };
+                cwd: Some(project.display().to_string()), tool_path: None, extra_args: Vec::new(), local: None, briefing: None, options: Vec::new(), cols: 110, rows: 32 };
             let started = start(&terminals, request, events).unwrap_or_else(|e| panic!("{tool:?} didn't start: {e}"));
             let mut output = Vec::new();
             let early_exit = collect(&rx, &mut output, |screen| screen.lines().count() >= 6, Duration::from_secs(25));
@@ -715,7 +761,7 @@ mod real_cli_tests {
 
     fn chat(tool: Tool, session_id: Option<String>, project: &Path) -> StartRequest {
         StartRequest { chat_id: None, kind: StartKind::Chat, tool: Some(tool), session_id, known_sessions: Vec::new(),
-            cwd: Some(project.display().to_string()), tool_path: None, extra_args: Vec::new(), local: None, briefing: None, cols: 110, rows: 32 }
+            cwd: Some(project.display().to_string()), tool_path: None, extra_args: Vec::new(), local: None, briefing: None, options: Vec::new(), cols: 110, rows: 32 }
     }
 
     fn open(terminals: &Terminals, request: StartRequest) -> (Started, Receiver<InvokeResponseBody>) {

@@ -5,7 +5,7 @@ import { handleDelegation, briefing } from './delegation.js';
 import { TaskLedger } from './task-ledger.js';
 import { ProjectBoard } from './board.js';
 import { toolInfo, describeStatus } from './tools.js';
-import { TerminalView, isMac } from './terminal.js';
+import { TerminalView, isMac, isWindows } from './terminal.js';
 import { THEMES, THEME_LIST, THEME_GROUPS, DEFAULT_THEME, FONT_LIST } from './themes.js';
 import { fontFamily, loadFont } from './fonts.js';
 import { usageTotals, formatTokens, formatLimitReset, formatLimitCountdown, headerAllowances, trackResets, takeDueResets } from './usage.js';
@@ -349,6 +349,7 @@ class Pane {
       cwd: projectPath(chat) || null, toolPath: state.toolPaths[engine] ?? null,
       local: local ? { server: chat.server, model: chat.model } : null,
       extraArgs: shell || local ? [] : store.splitArgs(state.settings.toolArgs[chat.tool] ?? ''),
+      options: shell || local ? [] : store.toolOptions(state.settings, chat.tool, { windows: isWindows }),
       briefing: shell ? null : briefing(state, chat.id) })
       .then(() => this.view.status === 'running' && this.chatId === page().active && this.visible && this.view.focus());
   }
@@ -658,9 +659,15 @@ function settingsDialog({ focus = '' } = {}) {
     <fieldset><legend>Safeguards</legend>
       ${toggle('confirmRemove', 'Ask before removing a chat', 'Shows “Are you sure?” when you remove a chat with × in the sidebar or “Delete chat…”.')}
     </fieldset>
+    <fieldset><legend>Approvals</legend>
+      <p class="dialog-note">How much each AI may do without asking you. Applies to chats started or reopened from now on. Approval questions an AI still asks stay for you to answer; other AIs never answer them.</p>
+      ${Object.entries(store.APPROVAL_MODES).map(([t, modes]) => `<label class="row">${toolInfo[t].name}<select name="approval-${t}">${modes.map(m => `<option value="${m.id}" ${s.approvals[t] === m.id ? 'selected' : ''}>${escape(m.name)}${m.risky ? ' ⚠' : ''}</option>`).join('')}</select></label>
+      <small class="approval-note" data-tool="${t}">${escape(modes.find(m => m.id === s.approvals[t])?.note ?? '')}</small>`).join('')}
+      ${isWindows ? toggle('codexWindowsSandbox', 'Codex: use the unelevated Windows sandbox', 'Recommended. Codex’s elevated sandbox can fail with “setup refresh had errors” while the Codex app is running. The unelevated one still keeps commands inside the project folder.') : ''}
+    </fieldset>
     <fieldset><legend>AI tools</legend>
       <p class="dialog-note">Extra command-line options, added whenever that tool starts a chat. They apply to chats started from now on.</p>
-      ${store.AI_TOOLS.map(t => `<label class="row">${toolInfo[t].name}<input name="args-${t}" value="${escape(s.toolArgs[t] ?? '')}" placeholder="${t === 'codex' ? 'e.g. --approve-for-me' : t === 'claude' ? 'e.g. --model sonnet' : ''}" autocomplete="off" spellcheck="false"></label>`).join('')}
+      ${store.AI_TOOLS.map(t => `<label class="row">${toolInfo[t].name}<input name="args-${t}" value="${escape(s.toolArgs[t] ?? '')}" placeholder="${t === 'codex' ? 'e.g. -m gpt-5.5' : t === 'claude' ? 'e.g. --model sonnet' : ''}" autocomplete="off" spellcheck="false"></label>`).join('')}
       <button type="button" data-action="tools">sign in, install or choose where each tool is…</button>
     </fieldset>
     <fieldset><legend>Local models</legend>
@@ -702,6 +709,11 @@ function settingsDialog({ focus = '' } = {}) {
         s.fontSize = size;
         panes.forEach(pane => pane.view.setFontSize(size));
       }
+    } else if (field.name.startsWith('approval-')) {
+      const tool = field.name.slice(9);
+      s.approvals[tool] = field.value;
+      const note = dialog.querySelector(`.approval-note[data-tool="${tool}"]`);
+      if (note) note.textContent = store.APPROVAL_MODES[tool].find(m => m.id === field.value)?.note ?? '';
     } else if (field.name.startsWith('args-')) {
       const tool = field.name.slice(5);
       if (field.value.trim()) s.toolArgs[tool] = field.value; else delete s.toolArgs[tool];

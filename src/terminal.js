@@ -8,7 +8,7 @@ import { detectAgentState, delegationReady, promptDraft, AgentStatus } from './a
 import { THEMES, DEFAULT_THEME } from './themes.js';
 
 export const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
-const isWindows = /Windows/.test(navigator.userAgent);
+export const isWindows = /Windows/.test(navigator.userAgent);
 
 // Linux webviews substitute a sans-serif font for any family that isn't installed, which breaks
 // the terminal grid, so there the user's configured `monospace` font comes first.

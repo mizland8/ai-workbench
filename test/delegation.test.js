@@ -54,9 +54,13 @@ test('a unique renamed chat resolves; ambiguous names require IDs', () => {
   const { state, parent, child, grandchild } = setup();
   child.title = 'Grapples';
   assert.equal(resolveTarget(state, parent.id, 'Grapples').id, child.id);
+  assert.equal(resolveTarget(state, parent.id, ' grapples ').id, child.id);
   assert.throws(() => resolveTarget(state, parent.id, 'Animations'), /No AI chat/);
   grandchild.title = child.title;
   assert.throws(() => resolveTarget(state, parent.id, 'Grapples'), /Several/);
+  grandchild.title = 'GRAPPLES';
+  assert.equal(resolveTarget(state, parent.id, 'Grapples').id, child.id);
+  assert.throws(() => resolveTarget(state, parent.id, 'grapples'), /Several/);
   assert.equal(resolveTarget(state, parent.id, child.id).id, child.id);
 });
 test('send targets the existing terminal and read reports its output', async () => {

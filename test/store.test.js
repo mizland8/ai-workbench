@@ -23,7 +23,8 @@ const workspace = () => ({
   },
   pinned: ['chat:c4', 'usage'],
   theme: 'amber', collapsed: ['p2'], toolPaths: { codex: '/opt/codex' },
-  settings: { fontSize: 15, font: 'fira-code', notifications: false, notifyResets: false, checkUpdates: false, flash: true, reopenChats: true, confirmRemove: false, dockWidth: 380, toolArgs: { codex: '--approve-for-me' }, localServer: 'http://192.168.1.20:1234' },
+  settings: { fontSize: 15, font: 'fira-code', notifications: false, notifyResets: false, checkUpdates: false, flash: true, reopenChats: true, confirmRemove: false, dockWidth: 380, toolArgs: { codex: '--approve-for-me' }, localServer: 'http://192.168.1.20:1234',
+    approvals: { claude: 'auto', codex: 'review', agy: 'ask' }, codexWindowsSandbox: false },
 });
 
 test('a saved workspace loads unchanged', () => {
@@ -112,7 +113,8 @@ test('settings are checked and limited', () => {
   const saved = workspace();
   saved.settings = { fontSize: 99, font: 'comic-sans', dockWidth: 'wide', flash: 'yes', notifications: false, toolArgs: { codex: '-c x=1', shell: 'nope', claude: 3 }, localServer: '  192.168.1.20:11434  ' };
   const { state } = store.loadState(memory({ [store.storageKey]: JSON.stringify(saved) }));
-  assert.deepEqual(state.settings, { fontSize: 24, font: 'system', notifications: false, notifyResets: true, checkUpdates: true, flash: true, reopenChats: true, confirmRemove: true, dockWidth: 460, toolArgs: { codex: '-c x=1' }, localServer: '192.168.1.20:11434' });
+  assert.deepEqual(state.settings, { fontSize: 24, font: 'system', notifications: false, notifyResets: true, checkUpdates: true, flash: true, reopenChats: true, confirmRemove: true, dockWidth: 460, toolArgs: { codex: '-c x=1' }, localServer: '192.168.1.20:11434',
+    approvals: { claude: 'ask', codex: 'ask', agy: 'ask' }, codexWindowsSandbox: true });
 });
 
 test('a new chat opens on its project page; Claude chats get a session ID', () => {
@@ -228,4 +230,25 @@ test('starting a new conversation replaces the session ID', () => {
   const codex = { tool: 'codex', sessionId: 'old' };
   store.startNewConversation(codex);
   assert.equal(codex.sessionId, null);
+});
+
+test('recommended options: the Codex Windows sandbox fix is on by default, approvals stay with each CLI', () => {
+  const settings = store.defaultSettings();
+  assert.deepEqual(store.toolOptions(settings, 'codex', { windows: true }), [store.CODEX_WINDOWS_SANDBOX]);
+  assert.deepEqual(store.toolOptions(settings, 'codex', { windows: false }), []);
+  for (const tool of ['claude', 'agy', 'opencode']) assert.deepEqual(store.toolOptions(settings, tool, { windows: true }), []);
+});
+
+test('chosen approval modes become CLI options and survive a reload', () => {
+  const state = store.emptyState();
+  Object.assign(state.settings.approvals, { claude: 'edits', codex: 'never', agy: 'all' });
+  state.settings.codexWindowsSandbox = false;
+  const { settings } = store.normalize(JSON.parse(JSON.stringify(state)));
+  assert.deepEqual(store.toolOptions(settings, 'claude').map(o => o.args), [['--permission-mode', 'acceptEdits']]);
+  assert.deepEqual(store.toolOptions(settings, 'codex', { windows: true }).map(o => o.args), [['--ask-for-approval', 'never', '--sandbox', 'workspace-write']]);
+  assert.deepEqual(store.toolOptions(settings, 'agy').map(o => o.flag), ['--dangerously-skip-permissions']);
+  // An unknown mode from a newer or edited workspace falls back to asking.
+  const odd = store.normalize({ settings: { approvals: { claude: 'sometimes' } } }).settings;
+  assert.equal(odd.approvals.claude, 'ask');
+  assert.equal(odd.codexWindowsSandbox, true);
 });

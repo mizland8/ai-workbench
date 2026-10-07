@@ -6,7 +6,9 @@ export function resolveTarget(state, sourceId, target) {
   const allowed = delegationTargets(state, sourceId);
   const byId = allowed.find(chat => chat.id === target);
   if (byId) return byId;
-  const named = allowed.filter(chat => chat.title === target);
+  let named = allowed.filter(chat => chat.title === target);
+  // People say "game art" for a chat titled "Game Art"; accept that when it names only one chat.
+  if (!named.length) named = allowed.filter(chat => String(chat.title ?? '').trim().toLowerCase() === String(target ?? '').trim().toLowerCase());
   if (named.length > 1) throw new Error('Several connected chats have that name. Use the chat ID from bridge list.');
   if (!named.length) throw new Error('No AI chat in this project has that name or ID. Run bridge list for the team.');
   return named[0];
@@ -100,6 +102,7 @@ export function briefing(state, chatId) {
     'You coordinate with them through the Workbench bridge: run the program whose path is in the AI_WORKBENCH_CLI environment variable with the arguments bridge help, then bridge list.',
     'bridge list shows the live team with each chat\'s role, status, open tasks and latest note. bridge board reads the project notes; bridge post followed by a note shares what you are doing, which files you own, and what you finished, so teammates know your updates. Post when you start and finish meaningful work.',
     'Use bridge send to give a teammate a task when the user asks you to involve other AIs or the work clearly needs it, and split file ownership so edits do not collide. When you receive a task tagged AI Workbench task, report with bridge complete or bridge fail. When a teammate reports back you get a short notice; read it with bridge inbox and acknowledge with bridge ack.',
+    'The bridge is the only way to reach a teammate: never use computer use, screen control, window automation or simulated keystrokes to type into another chat or terminal.',
     'If a bridge command fails, quote its exact error. Never claim a teammate did not respond without checking bridge list, bridge tasks and bridge read. Never answer another AI\'s approval prompts and never print AI_WORKBENCH_TOKEN.',
   ].filter(Boolean).join(' ');
 }
