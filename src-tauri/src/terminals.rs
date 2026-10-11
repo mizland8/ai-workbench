@@ -779,7 +779,7 @@ mod real_cli_tests {
     }
 
     pub(crate) fn uuid() -> String {
-        std::fs::read_to_string("/proc/sys/kernel/random/uuid").unwrap().trim().to_string()
+        uuid::Uuid::new_v4().to_string()
     }
 
     #[test]
