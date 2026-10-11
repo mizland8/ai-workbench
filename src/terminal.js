@@ -4,7 +4,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 import { startTerminal, writeTerminal, resizeTerminal, stopTerminal, openLink, submitTerminalPrompt } from './backend.js';
-import { detectAgentState, delegationReady, promptDraft, AgentStatus } from './agent-status.js';
+import { detectAgentState, deliveryState, preparedPromptMatches, AgentStatus } from './agent-status.js';
 import { THEMES, DEFAULT_THEME } from './themes.js';
 
 export const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
@@ -40,6 +40,8 @@ export class TerminalView {
     this.error = '';
     this.lastInputAt = 0;
     this.lastOutputAt = 0;
+    this.outputEpoch = 0;
+    this.lastInputEpoch = 0;
     this.hasDraft = false;
     this.submitting = false;
     this.exitCode = null;
@@ -79,6 +81,8 @@ export class TerminalView {
     this.agent.reset();
     this.lastInputAt = Date.now();
     this.lastOutputAt = 0;
+    this.outputEpoch = 0;
+    this.lastInputEpoch = 0;
     this.hasDraft = false;
     this.submitting = false;
     this.setStatus('starting');
@@ -104,6 +108,7 @@ export class TerminalView {
   }
 
   handleEvent(event) {
+    if (event.type === 'outputEpoch') this.outputEpoch = event.epoch;
     if (event.type === 'exit') {
       this.id = null;
       this.exitCode = event.code ?? null;
@@ -115,8 +120,10 @@ export class TerminalView {
   }
 
   input(data) {
+    if (this.submitting) return;
     if (this.status === 'running' && this.id !== null) {
       this.lastInputAt = Date.now();
+      this.lastInputEpoch = this.outputEpoch;
       this.hasDraft = data !== '\r' && data !== '\x03';
       writeTerminal(this.id, data);
     }
@@ -136,29 +143,42 @@ export class TerminalView {
     return lines.join('\n').slice(-64000);
   }
 
-  promptProblem() {
-    const lines = this.screenLines();
-    const typed = this.screenLines(true);
-    // Keystrokes cannot tell whether Backspace or Ctrl-U emptied the prompt, so once the screen
-    // has settled after the latest input, what it shows decides.
-    if (this.lastOutputAt > this.lastInputAt && Date.now() - this.lastOutputAt >= 1500) {
-      const draft = promptDraft(this.tool, typed);
-      if (draft !== null) this.hasDraft = draft;
-    }
-    if (this.status !== 'running' || this.id === null || this.agent.state !== 'idle' || !delegationReady(this.tool, lines, typed) || this.submitting || this.hasDraft || !this.lastOutputAt || Date.now() - Math.max(this.lastInputAt, this.lastOutputAt) < 1500) {
-      return 'Target is busy, needs user input, has a draft, is not at a recognized prompt, or is still settling. No prompt was sent.';
-    }
-    return null;
+  deliveryState() {
+    return deliveryState({ ...this, lines: this.screenLines(), typed: this.screenLines(true) });
+  }
+
+  promptProblem() { return this.deliveryState().reason; }
+
+  async refreshPrompt() {
+    // xterm.write is asynchronous. A sentinel flushes queued output before inspecting it.
+    await new Promise(resolve => this.term.write('', resolve));
+    this.agent.observe(detectAgentState(this.tool, this.screenLines()));
+    return this.deliveryState();
   }
 
   async submitPrompt(prompt) {
+    await this.refreshPrompt();
     const problem = this.promptProblem();
     if (problem) throw new Error(problem);
     this.submitting = true;
     const generation = this.generation;
     this.lastInputAt = Date.now();
-    try { await submitTerminalPrompt(this.id, prompt); }
-    finally { if (generation === this.generation) this.submitting = false; }
+    const id = this.id;
+    try {
+      await submitTerminalPrompt(id, prompt, 'prepare', this.outputEpoch);
+      this.hasDraft = true;
+      await new Promise(resolve => setTimeout(resolve, 250));
+      await this.refreshPrompt();
+      if (generation !== this.generation || this.status !== 'running' || this.id !== id ||
+          !preparedPromptMatches(this.tool, this.screenLines(), this.screenLines(true), prompt)) {
+        throw new Error('The terminal changed after paste; Enter was withheld. Inspect the draft and approval state before resolving delivery.');
+      }
+      await submitTerminalPrompt(id, prompt, 'commit', this.outputEpoch);
+      this.hasDraft = false;
+    } finally {
+      await submitTerminalPrompt(id, '', 'cancel', this.outputEpoch).catch(() => {});
+      if (generation === this.generation) this.submitting = false;
+    }
   }
 
   handleKey(event) {
@@ -225,6 +245,8 @@ export class TerminalView {
       if (this.status !== 'running') return;
       const wait = this.agent.observe(detectAgentState(this.tool, this.screenLines()));
       if (wait > 0) this.scheduleDetect(wait);
+      else if (Date.now() - Math.max(this.lastInputAt, this.lastOutputAt) < 1500) this.scheduleDetect(1501 - (Date.now() - Math.max(this.lastInputAt, this.lastOutputAt)));
+      else this.callbacks.onStatus?.(this);
     }, delay);
   }
 

@@ -100,6 +100,7 @@ pub fn run() {
             local_models::local_models,
             usage::usage_summary,
             terminals::terminal_start,
+            sessions::session_permissions,
             terminals::terminal_write,
             terminals::terminal_submit_prompt,
             terminals::terminal_resize,

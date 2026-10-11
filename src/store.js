@@ -40,7 +40,8 @@ export const APPROVAL_MODES = {
     { id: 'all', name: 'Approve everything', note: 'No checks at all, including commands outside the project. Use with care.', flag: '--dangerously-skip-permissions', args: ['--dangerously-skip-permissions'], risky: true },
   ],
   codex: [
-    { id: 'ask', name: 'Ask before acting', note: 'Codex’s own default.' },
+    { id: 'custom', name: 'Use CLI configuration', note: 'Uses Codex configuration and extra CLI options. Inspect Session permissions for the last recorded effective policy.' },
+    { id: 'ask', name: 'Ask before acting', note: 'Workspace writes, protected .git/.codex/.agents paths read-only, network restricted; user approval for operations beyond these limits. Managed policy can restrict approvals.', flag: '--ask-for-approval', args: ['--ask-for-approval', 'on-request', '--sandbox', 'workspace-write'] },
     { id: 'review', name: 'Automatic review', note: 'Codex reviews its own approval requests; commands stay in the sandbox.', flag: '--approve-for-me', args: ['--approve-for-me'] },
     { id: 'never', name: 'Never ask, stay sandboxed', note: 'Commands run in the sandbox without asking: they can change the project folder but not the rest of the computer or the network.', flag: '--ask-for-approval', args: ['--ask-for-approval', 'never', '--sandbox', 'workspace-write'] },
     { id: 'all', name: 'Approve everything, no sandbox', note: 'Commands run with your full access to the computer and network. Use with care.', flag: '--dangerously-bypass-approvals-and-sandbox', args: ['--dangerously-bypass-approvals-and-sandbox'], risky: true },
@@ -244,7 +245,7 @@ export function addChat(state, tool, projectId, title = '', local = null, parent
   const parent = state.chats.find(c => c.id === parentId);
   if (parentId && (!parent || parent.projectId !== projectId || !DELEGATION_TOOLS.includes(parent.tool) || !DELEGATION_TOOLS.includes(tool))) throw new Error('AI children must share their parent’s project');
   if (tool === 'local' && !(local?.server && local?.model)) throw new Error('A local-model chat needs a server and a model');
-  const chat = { id: crypto.randomUUID(), tool, projectId, title: title.trim() || (tool === 'local' ? modelLabel(local.model) : '') || 'New chat', sessionId: null };
+  const chat = { id: crypto.randomUUID(), tool, projectId, title: title.trim() || (tool === 'local' ? modelLabel(local.model) : `${{ claude: 'Claude', codex: 'Codex', agy: 'Antigravity', opencode: 'OpenCode', shell: 'Terminal' }[tool] ?? tool} ${state.chats.filter(c => c.tool === tool).length + 1}`), sessionId: null };
   if (parentId) chat.parentId = parentId;
   if (tool === 'local') Object.assign(chat, { server: local.server, model: local.model });
   ensureSessionId(chat);

@@ -131,7 +131,7 @@ test('working shows at once; idle and waiting must hold before they count', () =
 test('delegation rejects menus, sign-in, approvals, and unknown screens', async () => {
   const { delegationReady } = await import('../src/agent-status.js');
   // Codex draws its placeholder dim, and readiness reads the screen with dim text blanked.
-  const typed = { codexIdle: screens.codexIdle.map(line => line === '› Ask Codex to do anything' ? '›' : line) };
+  const typed = { opencodeStart: screens.opencodeStart.map(line => line.includes('Ask anything') ? '┃' : line), codexIdle: screens.codexIdle.map(line => line === '› Ask Codex to do anything' ? '›' : line) };
   for (const name of ['agyIdle', 'codexIdle', 'claudeDone', 'opencodeStart']) {
     assert.equal(delegationReady(expected[name][0], screens[name], typed[name]), true, name);
   }

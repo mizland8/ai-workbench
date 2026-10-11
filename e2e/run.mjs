@@ -31,7 +31,10 @@ const page = await launch({ profile, outDir: shots });
 const results = [];
 const check = (name, ok, detail = '') => { results.push([ok, name, detail]); console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${ok ? '' : `  → ${JSON.stringify(detail)}`}`); };
 const q = expr => page.eval(`return (${expr});`);
-const click = selector => page.eval(`const el = document.querySelector(${JSON.stringify(selector)}); if (!el) throw new Error('missing ' + ${JSON.stringify(selector)}); el.click();`);
+const click = selector => {
+  if (selector.startsWith('dialog ')) selector = selector.replace('dialog ', 'dialog[open] ');
+  return page.eval(`const el = document.querySelector(${JSON.stringify(selector)}); if (!el) throw new Error('missing ' + ${JSON.stringify(selector)}); el.click();`);
+};
 const calls = cmd => q(`__AIW_TEST__.log.filter(([c]) => c === ${JSON.stringify(cmd)}).map(([, a]) => a)`);
 const saved = () => q(`JSON.parse(localStorage.getItem('ai-workbench.workspace.v4'))`);
 const idOf = title => q(`JSON.parse(localStorage.getItem('ai-workbench.workspace.v4')).chats.find(c => c.title === ${JSON.stringify(title)})?.id`);
@@ -175,14 +178,14 @@ try {
   check('working shows moving dots on the pane, tab and sidebar', await paneState(claude) === 'working'
     && await q(`!!${pane(claude)}.querySelector('.agent-state .dots') && !!document.querySelector('.open-tab .run-dot.is-working .dots') && !!document.querySelector('.chat-row[data-id="${claude}"] .dots')`));
   await page.shot('08-working');
-  await show('claude', '● Here is the answer.\n✻ Baked for 2s · done\n❯ ');
+  await show('claude', '● Here is the answer.\n✻ Baked for 2s · done\n────────────────────\n❯ \n────────────────────');
   await wait(1700);
-  check('finishing while you watch reads as ready, no notification', await paneState(claude) === 'ready' && (await q('__AIW_TEST__.notifications.length')) === 0);
+  check('finishing while you watch reads as ready, no notification', await paneState(claude) === 'ready' && (await q('__AIW_TEST__.notifications.length')) === 0, { state: await paneState(claude), text: await paneText(claude) });
   await show('codex', '• Working (0s • esc to interrupt)\n  GPT · /work/app · ⠴');
   await wait(400);
-  await show('codex', '• All done.\n› Ask Codex to do anything');
+  await show('codex', '• All done.\n› \n\n GPT · /work/app');
   await wait(1700);
-  check('a chat that finished while you were in another one is marked done', await paneState(codex) === 'done');
+  check('a chat that finished while you were in another one is marked done', await paneState(codex) === 'done', { state: await paneState(codex), text: await paneText(codex) });
   check('done flashes its tab and border', await q(`getComputedStyle(document.querySelector('.open-tab.is-done')).animationName`) === 'tab-flash-done'
     && await q(`getComputedStyle(${pane(codex)}).animationName`) === 'border-flash-done');
   check('the window title mentions it', (await q('document.title')) === 'AI Workbench · 1 done');
@@ -195,11 +198,11 @@ try {
   await show('claude', ' Bash command\n   touch probe.txt\n Do you want to proceed?\n ❯ 1. Yes\n   3. No, and tell Claude what to do differently (esc)');
   await wait(700);
   const notes = await q('__AIW_TEST__.notifications');
-  check('a hidden chat that needs you flashes and notifies', await paneState(claude) === 'waiting' && notes.length === 1 && notes[0].title === 'Claude Code needs you' && notes[0].body === 'Fix login · app', notes);
+  check('a hidden chat that needs you flashes and notifies', await paneState(claude) === 'waiting' && notes.length === 1 && notes[0].title === 'Claude Code needs you' && notes[0].body.includes('Fix login') && notes[0].body.includes(claude.slice(0, 8)), notes);
   await click('[data-action=jump][data-state=waiting]');
   await wait(150);
   check('jumping goes to the chat that needs you', (await saved()).pages[app.id].active === claude && await visible(claude));
-  await show('claude', '● Done.\n❯ ');
+  await show('claude', '● Done.\n────────────────────\n❯ \n────────────────────');
   await wait(1700);
   await click('[data-action=layout][data-layout=grid]');
   await wait(100);
@@ -231,7 +234,7 @@ try {
   await wait(150);
   check('a pinned chat moves to the dock', await q(`${pane(claude)}.parentElement.id`) === 'dock' && JSON.stringify((await saved()).pages[app.id].open) === JSON.stringify([codex]));
   check('its label isn’t cut short', await q(`(() => { const t = ${pane(claude)}.querySelector('.pane-title'), p = ${pane(claude)}.querySelector('.pane-project'); return t.scrollWidth <= t.clientWidth && p.scrollWidth <= p.clientWidth; })()`));
-  check('it is labelled with its AI, chat and project', await q(`${pane(claude)}.querySelector('.tool-tag').textContent + ' ' + ${pane(claude)}.querySelector('.pane-title').textContent + ' ' + ${pane(claude)}.querySelector('.pane-project').textContent`) === 'claude Fix login · app');
+  check('it is labelled with its AI, chat and project', await q(`${pane(claude)}.querySelector('.tool-tag').textContent + ' ' + ${pane(claude)}.querySelector('.pane-title').textContent + ' ' + ${pane(claude)}.querySelector('.pane-project').textContent`) === `claude Fix login · ${claude.slice(0, 8)} · app`);
   check('the sidebar marks it pinned', /pinned/.test(await q(`document.querySelector('.chat-row[data-id="${claude}"]').innerText`)));
   await page.eval(`document.querySelector('.project-name[data-page="${site.id}"]').click();`);
   await wait(150);
@@ -416,7 +419,7 @@ try {
   await wait(50);
   await page.eval(`document.querySelector('dialog [name=title]').value = 'Renamed chat'; document.querySelector('dialog [type=submit]').click();`);
   await wait(100);
-  check('rename updates tab, sidebar and pane', await q(`${pane(claude)}.querySelector('.pane-title').textContent === 'Renamed chat' && document.querySelector('#tabs').innerText.includes('Renamed chat')`));
+  check('rename updates tab, sidebar and pane', await q(`${pane(claude)}.querySelector('.pane-title').textContent.startsWith('Renamed chat · ') && document.querySelector('#tabs').innerText.includes('Renamed chat')`));
   await page.eval(`${pane(claude)}.querySelector('[data-action=pane-menu]').click();`);
   await page.eval(`[...document.querySelectorAll('#menu button')].find(b => b.textContent === 'Delete chat…').click();`);
   await wait(50);
@@ -505,7 +508,7 @@ try {
   await wait(1900);
   check('bridge lists the named helper', (await bridge('list')).chats[0]?.name === 'Animations');
   const accepted = await bridge('send');
-  check('bridge submits to the existing AGY terminal', accepted.accepted === true && (await calls('terminal_submit_prompt')).at(-1)?.prompt.includes(`[AI Workbench task ${accepted.taskId}]`), accepted);
+  check('bridge submits to the existing AGY terminal', accepted.accepted === true && (await calls('terminal_submit_prompt')).findLast(a => a.phase === 'commit')?.prompt.includes(`[AI Workbench task ${accepted.taskId}]`), accepted);
   const workerBridge = (method, target, prompt) => page.eval(`return __AIW_TEST__.bridge({ source: { chatId: ${JSON.stringify(helper)}, terminalId: Object.values(__AIW_TEST__.terminals).find(t => t.request.chatId === ${JSON.stringify(helper)}).id }, method: ${JSON.stringify(method)}, target: ${JSON.stringify(target)}, prompt: ${JSON.stringify(prompt)} });`);
   await show('codex', 'Working…\n• Working (esc to interrupt)');
   const submitsBeforeReport = (await calls('terminal_submit_prompt')).length;
@@ -556,6 +559,15 @@ try {
   check('worker report survives a full interface reload', (await bridge('task', accepted.taskId)).task?.status === 'completed' && (await bridge('inbox')).reports[0]?.id === accepted.taskId);
   await bridge('ack', accepted.taskId);
   check('acknowledging a worker report clears it from the inbox', (await bridge('inbox')).reports.length === 0);
+  const corrected = await workerBridge('revise-fail', accepted.taskId, 'Correction: the first check was incomplete; verification failed.');
+  check('explicit correction preserves the original completed report', corrected.task?.status === 'failed' && corrected.task.reports.length === 2 && corrected.task.reports[0].status === 'completed');
+  check('corrected outcome returns to the requester inbox', (await bridge('inbox')).reports[0]?.status === 'failed');
+  await wait(150);
+  const reportNotifications = await q(`__AIW_TEST__.notifications.filter(n => n.title === 'AI Workbench task report').length`);
+  await workerBridge('revise-fail', accepted.taskId, 'Correction: the first check was incomplete; verification failed.');
+  await wait(150);
+  check('identical correction does not repeat requester notifications', await q(`__AIW_TEST__.notifications.filter(n => n.title === 'AI Workbench task report').length`) === reportNotifications);
+  await bridge('ack', accepted.taskId);
   await show('codex', '› \x1b[2mAsk Codex to do anything\x1b[0m\n\n? for shortcuts');
   await wait(1900);
   await rightClick(lead);
@@ -564,6 +576,34 @@ try {
   await wait(200);
   const setupInput = await q(`Object.values(__AIW_TEST__.terminals).find(t => t.request.chatId === ${JSON.stringify(lead)}).input.join('')`);
   check('delegation instructions are inserted into the parent without auto-submission', setupInput.includes('AI Workbench project') && !setupInput.includes('\r'));
+  // The fake line editor echoes at its cursor; redraw the real composer's populated state explicitly.
+  await show('codex', '› user-owned draft\n\n? for shortcuts');
+  await wait(1900);
+  const beforePermissionRestart = await starts();
+  const savedSession = (await saved()).chats.find(c => c.id === lead).sessionId;
+  await click('.app-header [data-action=settings]:not(#update-button)');
+  await page.eval(`const field = document.querySelector('[name="approval-codex"]'); field.value = 'never'; field.dispatchEvent(new Event('input', { bubbles: true }));`);
+  await click('dialog [type=submit]');
+  await rightClick(lead);
+  await menuItem('Session permissions');
+  await wait(100);
+  check('changed permission settings explicitly require a restart', await q(`document.querySelector('dialog[open]').textContent.includes('Settings changed')`));
+  await click('dialog [type=submit]');
+  check('safe permission restart refuses a user draft', await starts() === beforePermissionRestart && await q(`document.querySelector('dialog[open]').textContent.includes('draft')`), await q(`document.querySelector('dialog[open]')?.querySelector('.form-error')?.textContent ?? 'No active dialog error'`));
+  await click('dialog [data-dismiss]');
+  await show('codex', '› \n\n? for shortcuts');
+  await wait(1900);
+  await rightClick(lead);
+  await menuItem('Session permissions');
+  await wait(100);
+  await click('dialog [type=submit]');
+  await wait(400);
+  const permissionStart = (await calls('terminal_start')).at(-1)?.request;
+  check('safe restart resumes the same conversation with the new scoped permission preset', permissionStart?.sessionId === savedSession && permissionStart?.options.some(o => o.args.includes('never') && o.args.includes('workspace-write')));
+  await page.eval('location.reload();');
+  await wait(1700);
+  check('permission selection and session identity survive an interface reload', (await saved()).settings.approvals.codex === 'never' && (await saved()).chats.find(c => c.id === lead).sessionId === savedSession);
+
 
 } catch (error) {
   check('test run completed', false, String(error.stack ?? error));

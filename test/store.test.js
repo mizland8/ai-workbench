@@ -234,8 +234,9 @@ test('starting a new conversation replaces the session ID', () => {
 
 test('recommended options: the Codex Windows sandbox fix is on by default, approvals stay with each CLI', () => {
   const settings = store.defaultSettings();
-  assert.deepEqual(store.toolOptions(settings, 'codex', { windows: true }), [store.CODEX_WINDOWS_SANDBOX]);
-  assert.deepEqual(store.toolOptions(settings, 'codex', { windows: false }), []);
+  const ask = store.toolOptions(settings, 'codex', { windows: false });
+  assert.deepEqual(ask[0].args, ['--ask-for-approval', 'on-request', '--sandbox', 'workspace-write']);
+  assert.deepEqual(store.toolOptions(settings, 'codex', { windows: true }), [store.CODEX_WINDOWS_SANDBOX, ...ask]);
   for (const tool of ['claude', 'agy', 'opencode']) assert.deepEqual(store.toolOptions(settings, tool, { windows: true }), []);
 });
 

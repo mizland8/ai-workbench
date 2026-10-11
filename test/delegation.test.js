@@ -171,7 +171,7 @@ test('a descendant worker can report to its original ancestor requester', async 
   const result = await handleDelegation(state, panes, { source: { chatId: grandchild.id, terminalId: 3 }, method: 'fail', target: taskId, prompt: 'Missing dependency' }, () => {}, ledger);
   assert.equal(result.task.status, 'failed');
 });
-test('history capacity protects unread reports and discards only acknowledged final tasks', () => {
+test('history capacity protects unread reports and preserves acknowledged audit history', () => {
   const { state, parent, child } = setup();
   const ledger = new TaskLedger(taskStorage());
   for (let i = 0; i < 200; i++) ledger.create(parent.id, child.id, `Task ${i}`);
@@ -181,8 +181,8 @@ test('history capacity protects unread reports and discards only acknowledged fi
   assert.throws(() => ledger.create(parent.id, child.id, 'Extra task'), /full/);
   ledger.handle(state, parent.id, { method: 'ack', target: first });
   ledger.create(parent.id, child.id, 'Extra task');
-  assert.equal(ledger.tasks.length, 200);
-  assert.ok(!ledger.tasks.some(t => t.id === first));
+  assert.equal(ledger.tasks.length, 201);
+  assert.ok(ledger.tasks.some(t => t.id === first));
 });
 test('tracked prompt size reserves space for reporting instructions', async () => {
   const { state, child, panes, request } = setup();

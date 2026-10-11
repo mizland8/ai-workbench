@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -30,13 +30,20 @@ pub struct Terminals {
     claimed: Arc<Mutex<HashSet<String>>>,
 }
 
+enum TerminalInput {
+    Bytes(Vec<u8>),
+    Submit(Vec<u8>, u64, Sender<Result<(), String>>),
+}
+
 struct Terminal {
-    input: Sender<Vec<u8>>,
+    input: Sender<TerminalInput>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     #[cfg_attr(not(unix), allow(dead_code))]
     pid: Option<u32>,
     exited: AtomicBool,
+    output_epoch: AtomicU64,
+    pending_prompt: AtomicBool,
 }
 
 impl Terminals {
@@ -137,6 +144,7 @@ pub struct Started {
     session_id: Option<String>,
     resumed: bool,
     command: String,
+    applied_options: Vec<String>,
 }
 
 struct Plan {
@@ -234,6 +242,9 @@ fn plan(request: &StartRequest) -> Result<Plan, String> {
             if let (Some(text), Some(chat_id)) = (request.briefing.as_deref(), request.chat_id.as_deref()) {
                 brief(&mut plan, tool, text, chat_id);
             }
+            if tool == Tool::Codex && request.options.iter().any(|o| ["--ask-for-approval", "--approve-for-me", "--dangerously-bypass-approvals-and-sandbox"].contains(&o.flag.as_str())) {
+                check_permission_overrides(&request.extra_args)?;
+            }
             let program = plan.program.clone();
             let skipped = add_options(&mut plan.args, &request.options, |flag| tools::supports_flag(&program, flag));
             if !skipped.is_empty() {
@@ -244,6 +255,20 @@ fn plan(request: &StartRequest) -> Result<Plan, String> {
         }
     }
     Ok(plan)
+}
+
+// Permission presets are the source of truth; custom CLI configuration is an explicit opt-in.
+fn check_permission_overrides(args: &[String]) -> Result<(), String> {
+    for arg in args {
+        let config = arg.strip_prefix("--config=").or_else(|| arg.strip_prefix("-c")).unwrap_or(arg);
+        let key = arg.split('=').next().unwrap_or(arg);
+        if ["--sandbox", "-s", "--ask-for-approval", "-a", "--approve-for-me", "--full-auto", "--dangerously-bypass-approvals-and-sandbox", "--profile", "-p", "--permissions"].contains(&key)
+            || ["-s", "-a", "-p"].iter().any(|prefix| arg.starts_with(prefix) && arg.len() > prefix.len() && !arg.starts_with("--"))
+            || ["approval_policy", "approvals_reviewer", "approval_reviewer", "sandbox_mode", "sandbox_workspace_write", "permissions", "default_permissions"].iter().any(|prefix| config.starts_with(prefix)) {
+            return Err("Extra Codex options conflict with the selected permission preset. Remove permission overrides, or explicitly select Use CLI configuration in Settings; then restart and resume the chat.".into());
+        }
+    }
+    Ok(())
 }
 
 /// Give the AI its briefing the way its CLI takes standing instructions, without changing the
@@ -369,13 +394,15 @@ fn start_with_bridge(terminals: &Terminals, request: StartRequest, events: Chann
     let mut reader = pty.master.try_clone_reader().map_err(|e| e.to_string())?;
     let mut writer = pty.master.take_writer().map_err(|e| e.to_string())?;
 
-    let (input, typed) = mpsc::channel::<Vec<u8>>();
+    let (input, typed) = mpsc::channel::<TerminalInput>();
     let terminal = Arc::new(Terminal {
         input,
         master: Mutex::new(pty.master),
         killer: Mutex::new(child.clone_killer()),
         pid: child.process_id(),
         exited: AtomicBool::new(false),
+        output_epoch: AtomicU64::new(0),
+        pending_prompt: AtomicBool::new(false),
     });
     terminals.live.lock().unwrap().insert(id, Arc::clone(&terminal));
 
@@ -383,25 +410,41 @@ fn start_with_bridge(terminals: &Terminals, request: StartRequest, events: Chann
         send_event(&events, json!({ "type": "notice", "text": notice }));
     }
 
+    let writer_terminal = Arc::clone(&terminal);
     // Typing goes through its own thread: a CLI that isn't reading must not block the UI.
     thread::spawn(move || {
         for chunk in typed {
-            if writer.write_all(&chunk).and_then(|_| writer.flush()).is_err() {
-                break;
+            match chunk {
+                TerminalInput::Bytes(bytes) => {
+                    if writer.write_all(&bytes).and_then(|_| writer.flush()).is_err() { break; }
+                }
+                TerminalInput::Submit(bytes, expected_epoch, reply) => {
+                    if writer_terminal.output_epoch.load(Ordering::SeqCst) != expected_epoch {
+                        let _ = reply.send(Err("Terminal output changed before delivery; inspect the prompt before retrying".into()));
+                        continue;
+                    }
+                    let result = writer.write_all(&bytes).and_then(|_| writer.flush()).map_err(|e| format!("PTY delivery failed: {e}"));
+                    let failed = result.is_err();
+                    let _ = reply.send(result);
+                    if failed { break; }
+                }
             }
         }
     });
 
     let output = events.clone();
+    let reader_terminal = Arc::clone(&terminal);
     thread::spawn(move || {
         let mut buf = vec![0u8; 64 * 1024];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    let epoch = reader_terminal.output_epoch.fetch_add(1, Ordering::SeqCst) + 1;
                     if output.send(InvokeResponseBody::Raw(buf[..n].to_vec())).is_err() {
                         break;
                     }
+                    send_event(&output, json!({ "type": "outputEpoch", "epoch": epoch }));
                 }
                 Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                 Err(_) => break,
@@ -463,7 +506,7 @@ fn start_with_bridge(terminals: &Terminals, request: StartRequest, events: Chann
         });
     }
 
-    Ok(Started { id, session_id: plan.session_id, resumed: plan.resumed, command: display_command(&plan.program, &plan.args) })
+    Ok(Started { id, session_id: plan.session_id, resumed: plan.resumed, command: display_command(&plan.program, &plan.args), applied_options: request.options.iter().filter(|o| tools::supports_flag(&plan.program, &o.flag)).map(|o| o.label.clone()).collect() })
 }
 
 #[tauri::command]
@@ -474,23 +517,40 @@ pub async fn terminal_start(app: AppHandle, request: StartRequest, events: Chann
 #[tauri::command]
 pub fn terminal_write(terminals: State<'_, Terminals>, id: u32, data: String) -> Result<(), String> {
     let terminal = terminals.get(id).ok_or("This session has ended.")?;
-    terminal.input.send(data.into_bytes()).map_err(|_| "This session has ended.".to_string())
+    if terminal.pending_prompt.load(Ordering::SeqCst) { return Err("Bridge is preparing a prompt; wait for delivery to finish".into()); }
+    terminal.input.send(TerminalInput::Bytes(data.into_bytes())).map_err(|_| "This session has ended.".to_string())
 }
 
 // Paste and submit on the writer thread, preserving newlines as a single prompt.
 #[tauri::command]
-pub async fn terminal_submit_prompt(terminals: State<'_, Terminals>, id: u32, prompt: String) -> Result<(), String> {
+pub async fn terminal_submit_prompt(terminals: State<'_, Terminals>, id: u32, prompt: String, phase: String, expected_epoch: u64) -> Result<(), String> {
+    let terminal = terminals.get(id).ok_or("This session has ended.")?;
+    submit_prompt_to(terminal, prompt, phase, expected_epoch).await
+}
+
+async fn submit_prompt_to(terminal: Arc<Terminal>, prompt: String, phase: String, expected_epoch: u64) -> Result<(), String> {
     let prompt = prompt.replace("\r\n", "\n");
-    if prompt.trim().is_empty() || prompt.chars().count() > 32000 || prompt.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+    if phase != "cancel" && (prompt.trim().is_empty() || prompt.chars().count() > 32000 || prompt.chars().any(|c| c.is_control() && c != '\n' && c != '\t')) {
         return Err("Invalid delegation prompt".into());
     }
-    let terminal = terminals.get(id).ok_or("This session has ended.")?;
-    terminal.input.send(format!("\x1b[200~{}\x1b[201~", prompt).into_bytes()).map_err(|_| "This session has ended.")?;
-    tauri::async_runtime::spawn_blocking(move || {
-        thread::sleep(Duration::from_millis(200));
-        if terminal.exited.load(Ordering::SeqCst) { return Err("Target exited before the prompt was submitted".to_string()); }
-        terminal.input.send(vec![b'\r']).map_err(|_| "Target exited before submission".to_string())
-    }).await.map_err(|e| e.to_string())?
+    if terminal.exited.load(Ordering::SeqCst) { return Err("This session has ended.".into()); }
+    let bytes = match phase.as_str() {
+        "cancel" => { terminal.pending_prompt.store(false, Ordering::SeqCst); return Ok(()); }
+        "prepare" => {
+            if terminal.pending_prompt.swap(true, Ordering::SeqCst) { return Err("Another prompt delivery is in progress".into()); }
+            format!("\x1b[200~{prompt}\x1b[201~").into_bytes()
+        }
+        "commit" => {
+            if !terminal.pending_prompt.load(Ordering::SeqCst) { return Err("No prepared prompt to submit".into()); }
+            vec![b'\r']
+        }
+        _ => return Err("Unknown prompt delivery phase".into()),
+    };
+    let (reply, delivered) = mpsc::channel();
+    terminal.input.send(TerminalInput::Submit(bytes, expected_epoch, reply)).map_err(|_| "Target exited before submission")?;
+    tauri::async_runtime::spawn_blocking(move || delivered.recv_timeout(Duration::from_secs(5))
+        .map_err(|_| "Delivery confirmation unavailable; inspect the terminal before retrying".to_string())?)
+        .await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -641,6 +701,14 @@ mod tests {
     }
 
     #[test]
+    fn permission_presets_refuse_conflicting_cli_overrides_but_allow_model_settings() {
+        for args in [vec!["--sandbox", "danger-full-access"], vec!["--config=approval_policy=never"], vec!["-c", "sandbox_mode=read-only"], vec!["-anever"], vec!["-sworkspace-write"], vec!["--profile", "custom"]] {
+            assert!(check_permission_overrides(&args.into_iter().map(String::from).collect::<Vec<_>>()).is_err());
+        }
+        assert!(check_permission_overrides(&["-m".into(), "model".into(), "-c".into(), "model_reasoning_effort=low".into()]).is_ok());
+    }
+
+    #[test]
     fn missing_folders_are_reported() {
         let mut req = request(StartKind::Shell, None, None);
         req.cwd = Some("/no/such/folder".into());
@@ -697,7 +765,7 @@ mod real_cli_tests {
                 Ok(InvokeResponseBody::Raw(bytes)) => output.extend(bytes),
                 Ok(InvokeResponseBody::Json(json)) => {
                     let event: serde_json::Value = serde_json::from_str(&json).unwrap();
-                    if event["type"] != "notice" {
+                    if event["type"] != "notice" && event["type"] != "outputEpoch" {
                         return Some(event);
                     }
                 }
@@ -712,6 +780,39 @@ mod real_cli_tests {
 
     pub(crate) fn uuid() -> String {
         std::fs::read_to_string("/proc/sys/kernel/random/uuid").unwrap().trim().to_string()
+    }
+
+    #[test]
+    fn live_pty_dispatch_rejects_changed_output_and_confirms_writes() {
+        use std::os::unix::fs::PermissionsExt;
+        let project = std::env::temp_dir().join(format!("workbench-dispatch-{}", uuid()));
+        std::fs::create_dir_all(&project).unwrap();
+        let program = project.join("test-cli");
+        std::fs::write(&program, "#!/bin/sh\nprintf 'READY\\n'\nwhile IFS= read -r line; do printf 'COMMITTED\\n'; done\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let terminals = Terminals::default();
+        let mut req = chat(Tool::Claude, Some(uuid()), &project);
+        req.tool_path = Some(program.display().to_string());
+        let (started, rx) = open(&terminals, req);
+        let terminal = terminals.get(started.id).unwrap();
+        let mut out = Vec::new();
+        collect(&rx, &mut out, |text| text.contains("READY"), Duration::from_secs(3));
+        let submit = |phase: &str, epoch: u64| tauri::async_runtime::block_on(submit_prompt_to(terminal.clone(), "harmless probe".into(), phase.into(), epoch));
+        let epoch = terminal.output_epoch.load(Ordering::SeqCst);
+        assert!(submit("prepare", epoch + 1).is_err(), "stale observations must not paste");
+        submit("cancel", epoch).unwrap();
+        submit("prepare", terminal.output_epoch.load(Ordering::SeqCst)).unwrap();
+        collect(&rx, &mut out, |text| text.contains("harmless probe"), Duration::from_secs(3));
+        assert!(!screen_text(&out).contains("COMMITTED"), "paste alone must never press Enter");
+        assert!(submit("prepare", terminal.output_epoch.load(Ordering::SeqCst)).is_err(), "duplicate prepare must be blocked");
+        assert!(submit("commit", terminal.output_epoch.load(Ordering::SeqCst) + 1).is_err(), "changed output must withhold Enter");
+        assert!(!screen_text(&out).contains("COMMITTED"));
+        submit("commit", terminal.output_epoch.load(Ordering::SeqCst)).unwrap();
+        collect(&rx, &mut out, |text| text.contains("COMMITTED"), Duration::from_secs(3));
+        assert!(screen_text(&out).contains("COMMITTED"));
+        submit("cancel", terminal.output_epoch.load(Ordering::SeqCst)).unwrap();
+        terminal.stop(true);
+        std::fs::remove_dir_all(project).unwrap();
     }
 
     #[test]
@@ -772,9 +873,9 @@ mod real_cli_tests {
 
     fn type_text(terminals: &Terminals, id: u32, text: &str) {
         let terminal = terminals.get(id).expect("running");
-        terminal.input.send(text.as_bytes().to_vec()).unwrap();
+        terminal.input.send(TerminalInput::Bytes(text.as_bytes().to_vec())).unwrap();
         thread::sleep(Duration::from_millis(600));
-        terminal.input.send(b"\r".to_vec()).unwrap();
+        terminal.input.send(TerminalInput::Bytes(b"\r".to_vec())).unwrap();
     }
 
     fn close(terminals: &Terminals, id: u32, rx: &Receiver<InvokeResponseBody>) {
@@ -799,9 +900,9 @@ mod real_cli_tests {
         if squash(&screen_text(&out)).contains("trustthisfolder") {
             // "No, exit" is selected first; once the prompt is ready, move to "Yes, I trust this folder".
             let _ = collect(&rx, &mut out, |_| false, Duration::from_secs(3));
-            terminals.get(first.id).unwrap().input.send(b"\x1b[B".to_vec()).unwrap();
+            terminals.get(first.id).unwrap().input.send(TerminalInput::Bytes(b"\x1b[B".to_vec())).unwrap();
             thread::sleep(Duration::from_millis(1000));
-            terminals.get(first.id).unwrap().input.send(b"\r".to_vec()).unwrap();
+            terminals.get(first.id).unwrap().input.send(TerminalInput::Bytes(b"\r".to_vec())).unwrap();
         }
         let prompt_ready = |s: &str| { let s = squash(s); s.contains("Try\"") || s.contains("forshortcuts") };
         collect(&rx, &mut out, prompt_ready, Duration::from_secs(40));
@@ -858,7 +959,7 @@ mod real_cli_tests {
         assert!(early.is_none(), "Codex stopped: {early:?}\n{}", screen_text(&out));
         assert!(!squash(&screen_text(&out)).contains("Cannotusethebackgroundserver"));
         settle(&rx, &mut out);
-        terminals.get(first.id).unwrap().input.send(b"\r".to_vec()).unwrap();
+        terminals.get(first.id).unwrap().input.send(TerminalInput::Bytes(b"\r".to_vec())).unwrap();
         settle(&rx, &mut out);
         type_text(&terminals, first.id, "Reply with only the word pong");
         let found = collect(&rx, &mut out, |_| false, Duration::from_secs(120)).expect("no session event");

@@ -35,12 +35,16 @@ export async function handleDelegation(state, panes, request, onSend = () => {},
   const me = state.chats.find(c => c.id === source.chatId);
   const project = state.projects.find(p => p.id === me?.projectId) ?? null;
   const describe = chat => {
+    const view = panes.get(chat.id)?.view;
+    let delivery = view?.deliveryState?.();
     const parent = state.chats.find(c => c.id === chat.parentId);
     const working = ledger?.tasks.filter(t => t.toId === chat.id && openStatuses.includes(t.status)).map(t => ({ taskId: t.id, from: state.chats.find(c => c.id === t.fromId)?.title ?? t.fromId, prompt: t.prompt.slice(0, 160) })) ?? [];
+    if (delivery?.canAccept && working.length) delivery = { state: 'task_pending', canAccept: false, reason: `Task ${working[0].taskId} is unresolved. Inspect bridge task/read and obtain a worker report before another send.` };
     const note = project && board?.latest(project.id, chat.id);
-    return { id: chat.id, name: chat.title, tool: chat.tool, toolName: toolNames[chat.tool] ?? chat.tool, parentId: chat.parentId ?? null, parentName: parent?.title ?? null, relation: chat.id === me.id ? 'you' : relation(state, me.id, chat), status: panes.get(chat.id)?.display ?? 'closed', openTasks: working, ...(note ? { lastNote: { text: note.text.slice(0, 300), at: note.at } } : {}) };
+    return { id: chat.id, name: chat.title, tool: chat.tool, toolName: toolNames[chat.tool] ?? chat.tool, parentId: chat.parentId ?? null, parentName: parent?.title ?? null, relation: chat.id === me.id ? 'you' : relation(state, me.id, chat), label: `${chat.title} · ${toolNames[chat.tool] ?? chat.tool} · ${chat.id}`, status: delivery?.state ?? panes.get(chat.id)?.display ?? 'closed', canAccept: delivery?.canAccept ?? false, reason: delivery?.reason ?? null, openTasks: working, ...(note ? { lastNote: { text: note.text.slice(0, 300), at: note.at } } : {}) };
   };
   if (request.method === 'list') {
+    await Promise.all([...panes.values()].map(p => p.view.refreshPrompt?.()));
     return { you: describe(me), project: project ? { id: project.id, name: project.name, path: project.path } : null, chats: delegationTargets(state, me.id).map(describe),
       note: project ? 'Every AI chat in this project is listed. Stay in this project: work only in its folder. Closed chats must be opened in Workbench before they can receive tasks.' : 'This chat is not in a project, so only its parent and the chats under it are listed.' };
   }
@@ -50,10 +54,10 @@ export async function handleDelegation(state, panes, request, onSend = () => {},
     if (request.method === 'post') return { posted: board.post(project.id, me, request.prompt) };
     return { project: project.name, notes: board.read(project.id) };
   }
-  if (['tasks', 'task', 'complete', 'fail', 'inbox', 'ack'].includes(request.method)) {
+  if (['tasks', 'task', 'complete', 'fail', 'revise-complete', 'revise-fail', 'inbox', 'ack', 'resolve'].includes(request.method)) {
     if (!ledger) throw new Error('Task tracking is unavailable.');
     const result = ledger.handle(state, source.chatId, request);
-    if (['complete', 'fail'].includes(request.method) && result.task && !result.task.acknowledged) onReport(result.task);
+    if (['complete', 'fail', 'revise-complete', 'revise-fail'].includes(request.method) && result.reportChanged !== false && result.task && !result.task.acknowledged) onReport(result.task);
     return result;
   }
   const chat = resolveTarget(state, source.chatId, request.target);
@@ -64,6 +68,15 @@ export async function handleDelegation(state, panes, request, onSend = () => {},
   if (typeof request.prompt === 'string') request.prompt = request.prompt.replace(/\r\n/g, '\n');
   if (typeof request.prompt !== 'string' || !request.prompt.trim() || request.prompt.length > 32000 || /[\x00-\x08\x0b-\x1f\x7f]/.test(request.prompt)) throw new Error('Provide a prompt of 1–32000 characters without terminal control characters.');
   if (ledger && request.prompt.length > 31500) throw new Error('Tracked task prompts must be at most 31500 characters to leave room for reporting instructions.');
+  await target.view.refreshPrompt?.();
+  if (request.expiresAt && Date.now() >= request.expiresAt) throw new Error('Handoff request expired after refresh. No prompt was sent.');
+  if (source.view.id !== request.source.terminalId || source.view.status !== 'running') throw new Error('The requesting terminal has ended.');
+  const outstanding = ledger?.tasks.find(t => t.toId === chat.id && openStatuses.includes(t.status));
+  if (outstanding && outstanding.fromId === source.chatId && outstanding.prompt === request.prompt) {
+    const problem = target.view.promptProblem?.();
+    return { accepted: outstanding.status === 'submitted' && !problem, taskId: outstanding.id, status: outstanding.status, duplicate: true, ...(problem ? { error: problem } : {}), note: 'Existing task returned; no prompt replayed. Inspect bridge task/read if delivery is uncertain.' };
+  }
+  if (outstanding) throw new Error(`Target has unresolved task ${outstanding.id} (${outstanding.status}). Inspect bridge task/read; obtain a worker report before sending another task.`);
   let task;
   if (ledger) {
     const problem = target.view.promptProblem?.();

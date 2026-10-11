@@ -31,6 +31,9 @@ catch (error) { notice = `AI project board unavailable: ${error.message}`; }
 // A worker's report is saved at once. Its requester hears about it the next time its prompt is
 // free, so a notice never types into a busy AI, an approval question or the user's draft.
 const reportNotices = new Map();
+for (const task of taskLedger?.tasks ?? []) if (['completed', 'failed'].includes(task.status) && !task.acknowledged && !task.notified) {
+  reportNotices.set(task.fromId, new Set([...(reportNotices.get(task.fromId) ?? []), task.id]));
+}
 let refreshToolsDialog = null;
 // The chosen font is used once its files have loaded; until then the system font stands in.
 let currentFont = fontFamily('system');
@@ -47,7 +50,7 @@ const page = () => store.currentPage(state);
 const pageProjectId = () => state.page === store.INDIVIDUAL ? null : state.page;
 const pageName = key => key === store.INDIVIDUAL ? 'Individual chats' : projectById(key)?.name ?? '';
 const projectName = chat => chat.projectId ? projectById(chat.projectId)?.name ?? '' : 'individual';
-const stateLabels = { closed: 'closed', starting: 'starting', working: 'working', waiting: 'needs you', done: 'done', ready: 'ready', stopped: 'stopped', failed: 'couldn’t start' };
+const stateLabels = { busy: 'busy', approval_pending: 'approval pending', user_input_required: 'needs your answer', draft_present: 'draft', unsupported_prompt: 'inspect prompt', settling: 'settling', stale: 'waiting for screen', closed: 'closed', starting: 'starting', working: 'working', waiting: 'needs you', done: 'done', ready: 'ready', stopped: 'stopped', failed: 'couldn’t start' };
 const chatState = id => panes.get(id)?.display ?? 'closed';
 // Three dots that move while an AI works.
 const dots = '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>';
@@ -129,10 +132,10 @@ function chatRow(c, depth = 0) {
   const shown = chatState(c.id);
   const pinned = store.isPinned(state, c.id);
   const selected = !pinned && page().active === c.id && store.pageKeyOf(c) === state.page;
-  return `<div class="chat-item ${selected ? 'selected' : ''}" style="margin-left:${Math.min(depth, 8) * 14}px"><button class="chat-row" data-action="open-chat" data-id="${escape(c.id)}" title="${escape(c.title)} · ${stateLabels[shown]} — double-click to rename">
+  return `<div class="chat-item ${selected ? 'selected' : ''}" style="margin-left:${Math.min(depth, 8) * 14}px"><button class="chat-row" data-action="open-chat" data-id="${escape(c.id)}" title="${escape(c.title)} · ${escape(c.id)} · ${stateLabels[shown]} — double-click to rename">
     ${stateMark(shown)}
     <span class="tool-tag" style="--tool:${toolInfo[c.tool].color}">${toolInfo[c.tool].tag}</span>
-    <span class="chat-title">${escape(c.title)}</span>${pinned ? '<span class="pin-mark">pinned</span>' : ''}</button>
+    <span class="chat-title">${escape(c.title)} · ${escape(c.id.slice(0, 8))}</span>${pinned ? '<span class="pin-mark">pinned</span>' : ''}</button>
     <button class="row-remove" data-action="remove-chat" data-id="${escape(c.id)}" aria-label="Remove ${escape(c.title)}" title="Remove from the list (the conversation is kept)">×</button></div>`;
 }
 
@@ -209,7 +212,7 @@ function notifyChat(chat, waiting) {
   const key = `${chat.id}:${waiting}`;
   if (Date.now() - (notified.get(key) ?? 0) < 5000) return;
   notified.set(key, Date.now());
-  backend.notify(`${toolInfo[chat.tool].name} ${waiting ? 'needs you' : 'finished'}`, `${chat.title} · ${chat.projectId ? projectName(chat) : 'no project'}`);
+  backend.notify(`${toolInfo[chat.tool].name} ${waiting ? 'needs you' : 'finished'}`, `${chat.title} · ${chat.id.slice(0, 8)} · ${chat.projectId ? projectName(chat) : 'no project'} · Review the command, reason and permission in this terminal.`);
   if (!document.hasFocus()) backend.requestAttention();
 }
 
@@ -274,7 +277,10 @@ class Pane {
     if (status === 'failed') return 'failed';
     if (status !== 'running') return 'stopped';
     if (this.chat?.tool === 'shell') return 'ready';
-    if (agent.state === 'idle') return this.unseen ? 'done' : 'ready';
+    if (agent.state === 'idle') {
+      const delivery = this.view.deliveryState();
+      return delivery.canAccept ? (this.unseen ? 'done' : 'ready') : delivery.state;
+    }
     return agent.state;
   }
 
@@ -316,7 +322,8 @@ class Pane {
     this.el.style.setProperty('--tool', info.color);
     this.el.querySelector('.tool-tag').textContent = info.tag;
     this.el.querySelector('.tool-tag').title = chat.tool === 'local' ? `${chat.model} on ${chat.server}, in OpenCode` : info.name;
-    this.el.querySelector('.pane-title').textContent = chat.title;
+    this.el.querySelector('.pane-title').textContent = `${chat.title} · ${chat.id.slice(0, 8)}`;
+    this.el.querySelector('.pane-title').title = `Chat ID: ${chat.id}`;
     // In the dock a chat could belong to any project, so its header names it.
     this.el.querySelector('.pane-project').textContent = pinned ? `· ${projectName(chat)}` : '';
     const cwd = projectPath(chat) || homePath;
@@ -344,14 +351,20 @@ class Pane {
     const engine = store.engineOf(chat.tool);
     // A local-model chat runs OpenCode with its own server and model, without OpenCode's extra options
     // (a --model there would pick a different model).
+    this.permissionSelection = JSON.stringify({ approvals: state.settings.approvals[chat.tool], extraArgs: state.settings.toolArgs[chat.tool] ?? '', windowsSandbox: state.settings.codexWindowsSandbox });
+    const launchSelection = JSON.parse(this.permissionSelection);
+    const launchOptions = shell || local ? [] : store.toolOptions(state.settings, chat.tool, { windows: isWindows });
     return this.view.start({ kind: shell ? 'shell' : 'chat', chatId: chat.id, tool: shell ? null : engine, sessionId: chat.sessionId,
       knownSessions: state.chats.filter(c => c.id !== chat.id && c.sessionId).map(c => c.sessionId),
       cwd: projectPath(chat) || null, toolPath: state.toolPaths[engine] ?? null,
       local: local ? { server: chat.server, model: chat.model } : null,
       extraArgs: shell || local ? [] : store.splitArgs(state.settings.toolArgs[chat.tool] ?? ''),
-      options: shell || local ? [] : store.toolOptions(state.settings, chat.tool, { windows: isWindows }),
+      options: launchOptions,
       briefing: shell ? null : briefing(state, chat.id) })
-      .then(() => this.view.status === 'running' && this.chatId === page().active && this.visible && this.view.focus());
+      .then(started => {
+        this.launchPermissions = { selected: launchSelection.approvals ?? 'CLI default', requestedOptions: launchOptions.map(o => o.label), appliedOptions: started?.appliedOptions ?? 'Not reported by backend', extraOptions: !!launchSelection.extraArgs, startedAt: new Date().toISOString(), running: !!started };
+        if (this.view.status === 'running' && this.chatId === page().active && this.visible) this.view.focus();
+      });
   }
 
   renderOverlay() {
@@ -629,7 +642,13 @@ function showDialog(html, { onSubmit, onClose, className = '' } = {}) {
 }
 
 function showFormError(form, message) {
-  const error = form.querySelector('.form-error');
+  let error = form.querySelector('.form-error');
+  if (!error) {
+    error = document.createElement('p');
+    error.className = 'form-error';
+    error.setAttribute('role', 'alert');
+    form.prepend(error);
+  }
   error.textContent = message;
   error.hidden = false;
 }
@@ -666,6 +685,7 @@ function settingsDialog({ focus = '' } = {}) {
       ${isWindows ? toggle('codexWindowsSandbox', 'Codex: use the unelevated Windows sandbox', 'Recommended. Codex’s elevated sandbox can fail with “setup refresh had errors” while the Codex app is running. The unelevated one still keeps commands inside the project folder.') : ''}
     </fieldset>
     <fieldset><legend>AI tools</legend>
+      <p class="dialog-note">Use a chat’s Session permissions menu to inspect its launch and effective settings or restart and resume safely. Settings changes require a session restart. Existing approval rules stay with the CLI.</p>
       <p class="dialog-note">Extra command-line options, added whenever that tool starts a chat. They apply to chats started from now on.</p>
       ${store.AI_TOOLS.map(t => `<label class="row">${toolInfo[t].name}<input name="args-${t}" value="${escape(s.toolArgs[t] ?? '')}" placeholder="${t === 'codex' ? 'e.g. -m gpt-5.5' : t === 'claude' ? 'e.g. --model sonnet' : ''}" autocomplete="off" spellcheck="false"></label>`).join('')}
       <button type="button" data-action="tools">sign in, install or choose where each tool is…</button>
@@ -1125,6 +1145,30 @@ function showMenu(anchor, items) {
   menu.querySelector('button')?.focus();
 }
 
+async function sessionPermissionsDialog(id) {
+  const pane = panes.get(id), chat = chatById(id);
+  if (!chat) return;
+  const recorded = chat.tool === 'codex' && chat.sessionId ? await backend.sessionPermissions(chat.sessionId).catch(() => null) : null;
+  const selection = JSON.stringify({ approvals: state.settings.approvals[chat.tool], extraArgs: state.settings.toolArgs[chat.tool] ?? '', windowsSandbox: state.settings.codexWindowsSandbox });
+  const changed = pane?.permissionSelection && pane.permissionSelection !== selection;
+  showDialog(`<h2>Session permissions</h2><p>${escape(chat.title)} · ${escape(chat.id)} · ${escape(toolInfo[chat.tool].name)}</p>
+    <p>${changed ? 'Settings changed. Restart and resume this chat to apply them.' : 'Settings apply when a session starts; running sessions keep their launch settings.'}</p>
+    <pre>${escape(JSON.stringify(pane?.launchPermissions ?? { status: 'Chat is closed; current settings apply on next start.' }, null, 2))}</pre>
+    <h3>Effective settings reported by the CLI</h3><pre>${escape(recorded ? JSON.stringify(recorded, null, 2) : 'Not reported yet. In Codex use /permissions; in other tools inspect their permission controls. Workbench cannot override managed restrictions.')}</pre>
+    <p class="dialog-note">Codex workspace-write protects .git, .codex and .agents even within writable folders. Git operations affecting those paths require approval; chmod cannot change a sandbox mount. Network access, including local SSH, may require approval. Choose a narrow command rule in the CLI approval prompt to reuse authorization; Workbench preserves the CLI’s existing rules and credentials. Approval belongs to you, never to another chat. Managed policy may prohibit escalation.</p>
+    <p class="dialog-note">Extra CLI options and in-session changes may override launch settings. The reported settings are the last recorded turn, with its timestamp; confirm current settings in the CLI before acting.</p>
+    <div class="dialog-actions"><button type="button" data-dismiss>close</button><button type="submit">restart and resume safely</button></div>`, {
+      onSubmit: (_, form) => {
+        const view = pane?.view;
+        if (view?.status === 'running') {
+          const problem = view.promptProblem();
+          if (problem) { showFormError(form, problem); return false; }
+        }
+        pane?.start();
+      },
+    });
+}
+
 function chatMenu(el) {
   const chat = chatById(el.dataset.id);
   if (!chat) return;
@@ -1133,6 +1177,7 @@ function chatMenu(el) {
     ['Move under another AI…', () => parentDialog(chat.id)],
     ['Delegation instructions…', () => delegationDialog(chat.id)],
     ['AI handoffs…', () => handoffDialog()],
+    ['Session permissions…', () => sessionPermissionsDialog(chat.id)],
   ];
   showMenu(el, [
     ['Rename…', () => renameDialog(chat.id)], ...aiItems,
@@ -1175,7 +1220,7 @@ function boardHtml() {
 }
 
 function handoffDialog() {
-  showDialog(`<h2>AI handoffs</h2><p class="dialog-note">Tracked tasks and worker reports are saved on this computer. Completion is reported by the worker; review its changes and checks.</p>${taskLedger?.tasks.length ? taskLedger.tasks.slice().reverse().map(t => `<details><summary>${escape(chatById(t.fromId)?.title ?? t.fromId)} → ${escape(chatById(t.toId)?.title ?? t.toId)} · ${escape(t.status)}</summary><p>Task ${escape(t.id)}</p><pre class="handoff-prompt">${escape(t.prompt)}</pre>${t.result ? `<pre class="handoff-prompt">${escape(t.result)}</pre>` : ''}</details>`).join('') : handoffs.length ? handoffs.slice().reverse().map(h => `<details><summary>${escape(h.from)} → ${escape(h.to)} · ${escape(new Date(h.at).toLocaleTimeString())}</summary><pre class="handoff-prompt">${escape(h.prompt)}</pre></details>`).join('') : '<p>No tasks have been sent yet.</p>'}${boardHtml()}<div class="dialog-actions"><button type="button" data-dismiss>close</button></div>`);
+  showDialog(`<h2>AI handoffs</h2><p class="dialog-note">Tracked tasks and worker reports are saved on this computer. Completion is reported by the worker; review its changes and checks.</p>${taskLedger?.tasks.length ? taskLedger.tasks.slice().reverse().map(t => `<details><summary>${escape(chatById(t.fromId)?.title ?? t.fromId)} → ${escape(chatById(t.toId)?.title ?? t.toId)} · ${escape(t.status)}</summary><p>Task ${escape(t.id)}</p><pre class="handoff-prompt">${escape(t.prompt)}</pre>${t.result ? `<pre class="handoff-prompt">${escape(t.result)}</pre>` : ''}${t.reports?.length ? `<details><summary>Report history (${t.reports.length})</summary>${t.reports.map(r => `<p>${escape(r.status)} · ${escape(r.at)}${r.acknowledged ? ' · acknowledged' : ''}</p><pre class="handoff-prompt">${escape(r.result)}</pre>`).join('')}</details>` : ''}</details>`).join('') : handoffs.length ? handoffs.slice().reverse().map(h => `<details><summary>${escape(h.from)} → ${escape(h.to)} · ${escape(new Date(h.at).toLocaleTimeString())}</summary><pre class="handoff-prompt">${escape(h.prompt)}</pre></details>`).join('') : '<p>No tasks have been sent yet.</p>'}${boardHtml()}<div class="dialog-actions"><button type="button" data-dismiss>close</button></div>`);
 }
 
 async function attachFiles(id) {
@@ -1364,7 +1409,15 @@ function deliverReportNotices() {
     const reports = [...ids].map(id => taskLedger?.tasks.find(t => t.id === id)).filter(t => t && !t.acknowledged);
     if (!reports.length) continue;
     const text = `[AI Workbench] ${reports.map(t => `${chatById(t.toId)?.title ?? 'A teammate'} ${t.status} task ${t.id}`).join('; ')}. Read the report with bridge inbox, review it, then bridge ack.`;
-    view.submitPrompt(text).catch(() => reportNotices.set(chatId, new Set([...(reportNotices.get(chatId) ?? []), ...ids])));
+    view.submitPrompt(text).then(() => {
+      for (const report of reports) {
+        const current = taskLedger.tasks.find(t => t.id === report.id);
+        if (current?.updatedAt === report.updatedAt && current.result === report.result && current.status === report.status) taskLedger.update(report.id, { notified: true });
+      }
+    }).catch(() => {
+      // A failed submit can have reached the terminal. Preserve an inspectable notice, never replay it automatically.
+      for (const report of reports) taskLedger.update(report.id, { notificationUnknown: true, notified: true });
+    });
   }
 }
 setInterval(deliverReportNotices, 3000);
@@ -1382,6 +1435,7 @@ backend.resetTerminals().then(() => backend.listenDelegation(request => {
       reportNotices.set(task.fromId, new Set([...(reportNotices.get(task.fromId) ?? []), task.id]));
       notice = `AI report: ${chatById(task.toId)?.title ?? 'worker'} → ${chatById(task.fromId)?.title ?? 'requester'} (${task.status})`;
       renderStatus();
+      if (state.settings.notifications) backend.notify('AI Workbench task report', `${chatById(task.toId)?.title ?? 'worker'} · ${task.toId.slice(0, 8)} · ${task.status} · task ${task.id}. Read AI handoffs or bridge inbox.`);
       setTimeout(deliverReportNotices, 0);
     },
   });

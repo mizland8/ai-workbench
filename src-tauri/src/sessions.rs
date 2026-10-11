@@ -290,3 +290,60 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+
+#[tauri::command]
+pub fn session_permissions(id: String) -> Result<Option<serde_json::Value>, String> {
+    if !is_uuid(&id) { return Err("Invalid session ID".into()); }
+    permissions_in(&codex_dir(), &id)
+}
+
+fn permissions_in(codex: &Path, id: &str) -> Result<Option<serde_json::Value>, String> {
+    use std::io::{Seek, SeekFrom};
+    let suffix = format!("-{id}.jsonl");
+    for day in codex_day_dirs(codex) {
+        for path in files(&day) {
+            if !file_name(&path).ends_with(&suffix) { continue; }
+            let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
+            let len = file.metadata().map_err(|e| e.to_string())?.len();
+            file.seek(SeekFrom::Start(len.saturating_sub(2 * 1024 * 1024))).map_err(|e| e.to_string())?;
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+            let text = String::from_utf8_lossy(&bytes);
+            for line in text.lines().rev() {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                if value["type"] != "turn_context" { continue; }
+                let payload = &value["payload"];
+                let mut result = serde_json::Map::new();
+                result.insert("observedAt".into(), value["timestamp"].clone());
+                for key in ["approval_policy", "approval_reviewer", "sandbox_policy", "permission_profile", "permissions", "cwd"] {
+                    if let Some(field) = payload.get(key) { result.insert(key.into(), field.clone()); }
+                }
+                return Ok(Some(result.into()));
+            }
+        }
+    }
+    Ok(None)
+}
+
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+    #[test]
+    fn effective_permission_snapshot_is_scoped_and_excludes_conversation_and_credentials() {
+        let root = std::env::temp_dir().join(format!("workbench-permission-test-{}", uuid::Uuid::new_v4()));
+        let day = root.join("sessions/2026/10/10");
+        fs::create_dir_all(&day).unwrap();
+        let id = "aaaaaaaa-0000-4000-8000-000000000005";
+        let context = |approval: &str| serde_json::json!({ "type": "turn_context", "timestamp": "2026-10-10T12:00:00Z", "payload": { "approval_policy": approval, "sandbox_policy": { "type": "workspace-write", "network_access": false }, "api_key": "test-secret-do-not-return", "cwd": "/tmp/workbench" }}).to_string();
+        fs::write(day.join(format!("rollout-test-{id}.jsonl")), format!("{}\n{}\n{{partial", context("never"), context("on-request"))).unwrap();
+        let snapshot = permissions_in(&root, id).unwrap().unwrap();
+        assert_eq!(snapshot["approval_policy"], "on-request");
+        assert_eq!(snapshot["sandbox_policy"]["network_access"], false);
+        assert!(!snapshot.to_string().contains("test-secret"));
+        assert!(permissions_in(&root, "aaaaaaaa-0000-4000-8000-000000000006").unwrap().is_none());
+        assert!(session_permissions("../invalid".into()).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}

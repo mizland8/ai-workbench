@@ -29,7 +29,7 @@ fn native_client_routes_named_tasks_and_multiline_stdin_without_opening_a_gui() 
     let address = listener.local_addr().unwrap().to_string();
     let server = std::thread::spawn(move || {
         for method in [
-            "list", "read", "send", "tasks", "task", "complete", "fail", "inbox", "ack",
+            "list", "read", "send", "tasks", "task", "complete", "fail", "revise-complete", "revise-fail", "resolve", "inbox", "ack",
         ] {
             let (mut stream, _) = listener.accept().unwrap();
             stream
@@ -45,14 +45,14 @@ fn native_client_routes_named_tasks_and_multiline_stdin_without_opening_a_gui() 
             if !["list", "tasks", "inbox"].contains(&method) {
                 assert_eq!(request["target"], "Grapple Animations");
             }
-            if ["send", "complete", "fail"].contains(&method) {
+            if ["send", "complete", "fail", "revise-complete", "revise-fail", "resolve"].contains(&method) {
                 assert_eq!(request["prompt"], "Implement grapples\nReview the result");
             }
             writeln!(stream, "{}", json!({ "ok": true, "method": method })).unwrap();
         }
     });
     for method in [
-        "list", "read", "send", "tasks", "task", "complete", "fail", "inbox", "ack",
+        "list", "read", "send", "tasks", "task", "complete", "fail", "revise-complete", "revise-fail", "resolve", "inbox", "ack",
     ] {
         let mut command = Command::new(env!("CARGO_BIN_EXE_ai-workbench"));
         command
@@ -62,7 +62,7 @@ fn native_client_routes_named_tasks_and_multiline_stdin_without_opening_a_gui() 
         if !["list", "tasks", "inbox"].contains(&method) {
             command.arg("Grapple Animations");
         }
-        if ["send", "complete", "fail"].contains(&method) {
+        if ["send", "complete", "fail", "revise-complete", "revise-fail", "resolve"].contains(&method) {
             command.arg("-");
         }
         let mut child = command
@@ -71,7 +71,7 @@ fn native_client_routes_named_tasks_and_multiline_stdin_without_opening_a_gui() 
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        if ["send", "complete", "fail"].contains(&method) {
+        if ["send", "complete", "fail", "revise-complete", "revise-fail", "resolve"].contains(&method) {
             child
                 .stdin
                 .take()
@@ -114,4 +114,20 @@ fn help_needs_no_session_and_missing_credentials_fail_cleanly() {
         .unwrap();
     assert!(!missing.status.success());
     assert!(serde_json::from_slice::<Value>(&missing.stderr).unwrap()["error"].is_string());
+}
+
+
+#[test]
+fn cli_help_version_and_unknown_commands_are_headless() {
+    let program = env!("CARGO_BIN_EXE_ai-workbench");
+    for args in [vec!["help"], vec!["--help"], vec!["-h"], vec!["--version"], vec!["bridge", "--help"]] {
+        let output = Command::new(program).args(args).env_remove("DISPLAY").env_remove("WAYLAND_DISPLAY").output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(!output.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("gtk"));
+    }
+    let output = Command::new(program).arg("unknown-command").env_remove("DISPLAY").env_remove("WAYLAND_DISPLAY").output().unwrap();
+    assert!(!output.status.success());
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert!(error["error"].as_str().unwrap().contains("Unknown command"));
 }

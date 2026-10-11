@@ -10,12 +10,12 @@ use std::time::Duration;
 use tauri::{ipc::Channel, State};
 
 const LIMIT: u64 = 64 * 1024;
-const METHODS: [&str; 11] = [
-    "list", "read", "send", "tasks", "task", "complete", "fail", "inbox", "ack", "post", "board",
+const METHODS: [&str; 14] = [
+    "list", "read", "send", "tasks", "task", "complete", "fail", "revise-complete", "revise-fail", "inbox", "ack", "resolve", "post", "board",
 ];
 /// Methods that take no target chat or task.
 const UNTARGETED: [&str; 5] = ["list", "tasks", "inbox", "board", "post"];
-const GUIDE: &str = "AI Workbench bridge: every AI chat in your project (Claude Code, Codex, Antigravity CLI, OpenCode) can reach every other one. Run the executable in AI_WORKBENCH_CLI with: bridge list; bridge read <chat>; bridge send <chat> <prompt>; bridge post <note>; bridge board; bridge tasks; bridge task <task-id>; bridge inbox; bridge ack <task-id>; bridge complete <task-id> <summary>; bridge fail <task-id> <reason>. In a POSIX shell use: \"$AI_WORKBENCH_CLI\" bridge list. In PowerShell use: & $env:AI_WORKBENCH_CLI bridge list. Use - in place of the text to read multiline text from stdin. <chat> is an exact unique chat name or ID from bridge list. list shows you, your project and folder, and every AI chat in the project with its tool, lead (parentName), relation to you, status, open tasks and latest board note. Stay in your project: work only in its folder. The tree shows who leads; anyone in the project may message anyone. board and post share short project notes (what you are doing, files you own, what you finished) that survive restarts; post when you start and finish meaningful work. send types a prompt into the existing chat and returns a persistent taskId; it rejects busy, approval, closed or unsettled terminals, and a send is never replayed automatically. Do not retry to answer approvals. A delivery_unknown or dispatching task needs inspection before retrying. read returns terminal text, not a structured answer. Workers report with bridge complete or bridge fail; reports are claims, not verification. A requester gets a short notice once its prompt is free, then reads reports with bridge inbox and acknowledges them with bridge ack. If a command fails, quote its exact error; do not conclude a teammate is unresponsive without checking list, tasks and read. Never answer another AI's approval prompts. Never print or share AI_WORKBENCH_TOKEN.\n";
+const GUIDE: &str = "AI Workbench bridge: every AI chat in your project (Claude Code, Codex, Antigravity CLI, OpenCode) can reach every other one. Run the executable in AI_WORKBENCH_CLI with: bridge list; bridge read <chat>; bridge send <chat> <prompt>; bridge post <note>; bridge board; bridge tasks; bridge task <task-id>; bridge inbox; bridge ack <task-id>; bridge resolve <task-id> delivered|not-delivered <inspection evidence>; bridge complete <task-id> <summary>; bridge fail <task-id> <reason>; bridge revise-complete <task-id> <correction and reason>; bridge revise-fail <task-id> <correction and reason>. In a POSIX shell use: \"$AI_WORKBENCH_CLI\" bridge list. In PowerShell use: & $env:AI_WORKBENCH_CLI bridge list. Use - in place of the text to read multiline text from stdin. <chat> is an exact unique chat name or ID from bridge list. list shows you, your project and folder, and every AI chat in the project with its tool, lead (parentName), relation to you, status, open tasks and latest board note. Stay in your project: work only in its folder. The tree shows who leads; anyone in the project may message anyone. board and post share short project notes (what you are doing, files you own, what you finished) that survive restarts; post when you start and finish meaningful work. send types a prompt into the existing chat and returns a persistent taskId; it rejects busy, approval, closed or unsettled terminals, and a send is never replayed automatically. Do not retry to answer approvals. A delivery_unknown or dispatching task needs inspection before retrying. read returns terminal text, not a structured answer. Workers report with bridge complete or bridge fail; reports are claims, not verification. A requester gets a short notice once its prompt is free, then reads reports with bridge inbox and acknowledges them with bridge ack. If a command fails, quote its exact error; do not conclude a teammate is unresponsive without checking list, tasks and read. Never answer another AI's approval prompts. Never print or share AI_WORKBENCH_TOKEN.\n";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -219,11 +219,21 @@ pub fn bridge_respond(bridge: State<'_, Bridge>, id: String, response: Value) {
 /// Run before opening a GUI, so any AI's shell can use the same installed executable.
 pub fn cli() -> Option<i32> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) != Some("bridge") {
-        return None;
+    match args.first().map(String::as_str) {
+        None => return None,
+        Some("help" | "--help" | "-h") => {
+            println!("AI Workbench {}\nUsage: ai-workbench [help|--version|bridge <command>]\nNo arguments opens the desktop app.\n{}", env!("CARGO_PKG_VERSION"), GUIDE);
+            return Some(0);
+        }
+        Some("--version" | "version" | "-V") => {
+            println!("AI Workbench {}", env!("CARGO_PKG_VERSION"));
+            return Some(0);
+        }
+        Some("bridge") => {},
+        Some(command) => return print_result(Err(format!("Unknown command: {command}. Use ai-workbench help."))),
     }
     let result = (|| -> Result<Value, String> {
-        if args.get(1).map(String::as_str) == Some("help") {
+        if args.get(1).map(String::as_str).is_some_and(|arg| ["help", "--help", "-h"].contains(&arg)) {
             return Ok(json!({ "instructions": GUIDE }));
         }
         let method = args.get(1).ok_or("Use bridge help for commands")?;
