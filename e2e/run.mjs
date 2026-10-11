@@ -507,41 +507,55 @@ try {
   await show('agy', '> \nPress ? to see keyboard shortcuts.');
   await wait(1900);
   check('bridge lists the named helper', (await bridge('list')).chats[0]?.name === 'Animations');
+  const submits = async () => (await calls('terminal_submit_prompt')).filter(a => a.phase === 'commit');
+  const helperSubmits = async () => (await submits()).filter(a => a.prompt.startsWith('[AI Workbench]'));
   const accepted = await bridge('send');
-  check('bridge submits to the existing AGY terminal', accepted.accepted === true && (await calls('terminal_submit_prompt')).findLast(a => a.phase === 'commit')?.prompt.includes(`[AI Workbench task ${accepted.taskId}]`), accepted);
+  await wait(700);
+  const firstNotice = (await submits()).at(-1)?.prompt ?? '';
+  check('bridge send queues the task and types only a one-line notice into the idle helper', accepted.accepted === true && accepted.status === 'queued' && firstNotice.startsWith('[AI Workbench] 1 task waiting from Wrestling Lead. Run bridge next') && !firstNotice.includes('grapple') && !firstNotice.includes('\n'), { accepted, firstNotice });
   const workerBridge = (method, target, prompt) => page.eval(`return __AIW_TEST__.bridge({ source: { chatId: ${JSON.stringify(helper)}, terminalId: Object.values(__AIW_TEST__.terminals).find(t => t.request.chatId === ${JSON.stringify(helper)}).id }, method: ${JSON.stringify(method)}, target: ${JSON.stringify(target)}, prompt: ${JSON.stringify(prompt)} });`);
+  const claimed = await workerBridge('next');
+  check('the helper collects the full task with bridge next', claimed.task?.id === accepted.taskId && claimed.task.prompt === 'Implement the grapple animation' && claimed.instructions.includes(`bridge complete ${accepted.taskId}`), claimed);
   await show('codex', 'Working…\n• Working (esc to interrupt)');
   const submitsBeforeReport = (await calls('terminal_submit_prompt')).length;
   const completed = await workerBridge('complete', accepted.taskId, 'Updated animation.gd; checks passed.');
   check('worker completion is queued while its parent is busy', completed.task?.status === 'completed' && (await calls('terminal_submit_prompt')).length === submitsBeforeReport);
   check('parent inbox returns the explicit worker report', (await bridge('inbox')).reports[0]?.result === 'Updated animation.gd; checks passed.');
-  check('bridge reads helper terminal output', (await bridge('read')).text.includes('Implement the grapple animation'));
+  check('bridge reads helper terminal output', typeof (await bridge('read')).text === 'string');
   await page.eval(`${pane(helper)}.querySelector('.xterm-helper-textarea').focus();`);
   await page.type('x');
   await show('agy', '> x\nPress ? to see keyboard shortcuts.');
   await wait(1900);
-  check('populated AGY composer blocks delegation', !!(await bridge('send')).error);
+  let noticesBefore = (await helperSubmits()).length;
+  const second = await bridge('send', 'Animations', 'Second task');
+  await wait(3500);
+  check('a task sent to a chat with a draft is queued, and nothing is typed over the draft', second.status === 'queued' && (await helperSubmits()).length === noticesBefore, second);
+  check('the helper header shows its queued task', await q(`${pane(helper)}.querySelector('.queue-badge').textContent`) === '1 queued' && !(await q(`${pane(helper)}.querySelector('.queue-badge').hidden`)));
   await page.key('Backspace', { keyCode: 8 });
   await wait(20);
   await show('agy', '> \nPress ? to see keyboard shortcuts.');
-  await wait(1900);
-  check('deleting the final draft character unblocks AGY delegation', (await bridge('send')).accepted === true);
-  await show('agy', '> \nwrapped draft remains\nPress ? to see keyboard shortcuts.');
-  await wait(1900);
-  check('multiline AGY draft blocks delegation', !!(await bridge('send')).error);
+  await wait(3800);
+  check('clearing the draft lets the queued task notice through', (await helperSubmits()).length === noticesBefore + 1);
+  await workerBridge('next');
+  check('the badge clears once the helper collects its task', await q(`${pane(helper)}.querySelector('.queue-badge').hidden`));
   const rule = '─'.repeat(40);
-  await show('agy', `${rule}\n> half-written idea\n${rule}\n    Gemini 3.8 Flash · high`);
-  await wait(1900);
-  check('current AGY prompt box with text blocks delegation', !!(await bridge('send')).error);
+  for (const [screen, label, settle] of [
+    ['> \nwrapped draft remains\nPress ? to see keyboard shortcuts.', 'multiline AGY draft', 1900],
+    [`${rule}\n> half-written idea\n${rule}\n    Gemini 3.8 Flash · high`, 'current AGY prompt box with text', 1900],
+    ['Do you want to proceed?\n❯ Yes\nNo', 'approval screen', 1900],
+    ['Thinking…\nPress esc to interrupt generation.', 'working screen', 300],
+  ]) {
+    await show('agy', screen);
+    await wait(settle);
+    noticesBefore = (await helperSubmits()).length;
+    const queued = await bridge('send', 'Animations', `Task during ${label}`);
+    await wait(3500);
+    check(`${label} queues the task and receives no typing`, queued.status === 'queued' && (await helperSubmits()).length === noticesBefore, queued);
+    await bridge('cancel', queued.taskId);
+  }
   await show('agy', `${rule}\n>\n${rule}\n? for shortcuts    Gemini 3.8 Flash · high`);
   await wait(1900);
-  check('empty current AGY prompt box accepts delegation', (await bridge('send')).accepted === true);
-  await show('agy', 'Do you want to proceed?\n❯ Yes\nNo');
-  await wait(1900);
-  check('approval screen blocks delegation', !!(await bridge('send')).error);
-  await show('agy', 'Thinking…\nPress esc to interrupt generation.');
-  await wait(300);
-  check('working screen blocks delegation', !!(await bridge('send')).error);
+  check('the requester withdrew every unclaimed task', (await bridge('list')).chats[0]?.queued === 0);
   await rightClick(helper);
   await menuItem('Rename');
   await page.eval(`document.querySelector('dialog [name=title]').value = 'Grapples'; document.querySelector('dialog [type=submit]').click();`);

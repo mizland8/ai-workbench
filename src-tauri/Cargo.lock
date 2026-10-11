@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "ai-workbench"
-version = "0.2.11-repair.1"
+version = "0.2.11-repair.2"
 dependencies = [
  "libc",
  "portable-pty",

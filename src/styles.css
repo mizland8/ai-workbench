@@ -123,6 +123,7 @@ body.dragging-pane, body.dragging-pane * { cursor:grabbing !important; user-sele
 .agent-state.is-waiting { color:var(--warn); font-weight:600; }
 .agent-state.is-done { color:var(--ready); }
 .agent-state.is-failed { color:var(--danger); }
+.queue-badge { flex-shrink:0; color:var(--warn); }
 .agent-state .dots { margin-left:4px; }
 .agent-state .dots i { background:currentColor; }
 .pane[data-state=waiting] { border-color:var(--warn); }

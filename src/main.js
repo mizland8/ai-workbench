@@ -243,7 +243,8 @@ class Pane {
     this.el.className = 'pane';
     this.el.dataset.pane = chat.id;
     this.el.innerHTML = `<header class="pane-header" title="Drag onto another pane to swap them">
-        <span class="tool-tag"></span><span class="pane-title"></span><span class="pane-project"></span><span class="agent-state"></span><span class="pane-cwd"></span>
+        <span class="tool-tag"></span><span class="pane-title"></span><span class="pane-project"></span><span class="agent-state"></span>
+        <button class="small-button queue-badge" data-action="queue-notice" data-id="${escape(chat.id)}" hidden></button><span class="pane-cwd"></span>
         <button class="small-button" data-action="attach" data-id="${escape(chat.id)}" title="Insert file paths into the prompt">+ file</button>
         <button class="small-button pin-button" data-action="pin" data-id="${escape(chat.id)}"></button>
         <button class="small-button" data-action="pane-menu" data-id="${escape(chat.id)}" title="More">···</button>
@@ -290,6 +291,16 @@ class Pane {
     label.innerHTML = shown === 'working' ? `working${dots}` : stateLabels[shown];
     label.className = `agent-state is-${shown}`;
     this.el.dataset.state = shown;
+    this.renderQueue();
+  }
+
+  // Tasks other chats queued for this one, until it claims them with bridge next.
+  renderQueue() {
+    const queued = (taskLedger?.queued(this.chatId) ?? []).filter(t => store.delegationTargets(state, t.fromId).some(c => c.id === this.chatId)).length;
+    const badge = this.el.querySelector('.queue-badge');
+    badge.hidden = !queued;
+    badge.textContent = `${queued} queued`;
+    badge.title = `${plural(queued, 'task')} from other AI chats waiting for this one. Workbench tells it to run bridge next when its prompt is free; click to put that notice in the prompt yourself.`;
   }
 
   agentChanged(next, previous) {
@@ -1199,7 +1210,7 @@ function parentDialog(id) {
 }
 
 function delegationDialog(id) {
-  const instructions = 'Work with the other AI chats in this AI Workbench project. Run the executable named by the AI_WORKBENCH_CLI environment variable with the arguments bridge help, then bridge list. On macOS/Linux: "$AI_WORKBENCH_CLI" bridge list. On Windows PowerShell: & $env:AI_WORKBENCH_CLI bridge list. Stay in this project’s folder. Share what you are doing and which files you own with bridge post, and read teammates’ notes with bridge board. Send tasks with bridge send, inspect them with bridge tasks/task, and read reports with bridge inbox, then bridge ack. Report tasks given to you with bridge complete or bridge fail. Quote exact bridge errors; never claim a teammate did not respond without checking bridge list, tasks and read. Never answer another AI’s approval prompts. Do not print or share AI_WORKBENCH_TOKEN.';
+  const instructions = 'Work with the other AI chats in this AI Workbench project. Run the executable named by the AI_WORKBENCH_CLI environment variable with the arguments bridge help, then bridge list. On macOS/Linux: "$AI_WORKBENCH_CLI" bridge list. On Windows PowerShell: & $env:AI_WORKBENCH_CLI bridge list. Stay in this project’s folder. Share what you are doing and which files you own with bridge post, and read teammates’ notes with bridge board. Send tasks with bridge send; they queue until the teammate collects them. When Workbench says a task is waiting for you, run bridge next to read it, then report with bridge complete or bridge fail. Inspect tasks with bridge tasks/task, withdraw an unclaimed one with bridge cancel, and read reports with bridge inbox, then bridge ack. Quote exact bridge errors; never claim a teammate did not respond without checking bridge list, tasks and read. Never answer another AI’s approval prompts. Do not print or share AI_WORKBENCH_TOKEN.';
   showDialog(`<h2>AI delegation</h2><p class="dialog-note">Every AI chat in a project can reach the others; each one is told its project, its team and these commands when it starts. Use this to remind a chat mid-conversation. Right-click a chat → Open AI under this chat, or move one under another, to show who leads.</p>
     <p class="form-error" hidden></p><label>Instructions<textarea rows="8" readonly>${escape(instructions)}</textarea></label>
     <p class="dialog-note">Insert these into the chat, then press Enter to send. After that you can say: “Ask Codex to review what Claude changed.”</p>
@@ -1267,6 +1278,15 @@ const actions = {
   'resume': el => panes.get(el.dataset.id)?.start(),
   'new-conversation': el => panes.get(el.dataset.id)?.start({ fresh: true }),
   'pane-menu': el => chatMenu(el),
+  'queue-notice': el => {
+    const pane = panes.get(el.dataset.id);
+    const pending = pendingNotice(el.dataset.id);
+    if (!pane || !pending) return;
+    if (pane.view.status !== 'running') { notice = 'Open this chat to let it collect its queued tasks.'; renderStatus(); return; }
+    // The user sends it, after seeing what else is in the prompt.
+    focusChat(el.dataset.id);
+    pane.view.paste(pending.text);
+  },
 };
 
 document.addEventListener('click', event => {
@@ -1401,26 +1421,46 @@ for (const area of ['#panes', '#dock']) {
   }, true);
 }
 $('#dock-resizer').addEventListener('pointerdown', event => { event.preventDefault(); startDockResize(event); });
-function deliverReportNotices() {
-  for (const [chatId, ids] of reportNotices) {
-    const view = panes.get(chatId)?.view;
-    if (!view || view.status !== 'running' || view.promptProblem()) continue;
-    reportNotices.delete(chatId);
-    const reports = [...ids].map(id => taskLedger?.tasks.find(t => t.id === id)).filter(t => t && !t.acknowledged);
-    if (!reports.length) continue;
-    const text = `[AI Workbench] ${reports.map(t => `${chatById(t.toId)?.title ?? 'A teammate'} ${t.status} task ${t.id}`).join('; ')}. Read the report with bridge inbox, review it, then bridge ack.`;
-    view.submitPrompt(text).then(() => {
-      for (const report of reports) {
+// The one line typed into an AI's own prompt: tasks are waiting, or reports came back. The tasks and
+// reports themselves stay in the ledger, so a lost or late notice loses nothing and can be repeated.
+function pendingNotice(chatId) {
+  // Only tasks bridge next will hand over: both chats still in the same project.
+  const queued = (taskLedger?.queued(chatId) ?? []).filter(t => store.delegationTargets(state, t.fromId).some(c => c.id === chatId));
+  const reports = [...(reportNotices.get(chatId) ?? [])].map(id => taskLedger?.tasks.find(t => t.id === id)).filter(t => t && !t.acknowledged);
+  if (!queued.length && !reports.length) return null;
+  const names = ids => [...new Set(ids.map(id => chatById(id)?.title ?? 'a teammate'))].join(', ');
+  const parts = [];
+  if (queued.length) parts.push(`${plural(queued.length, 'task')} waiting from ${names(queued.map(t => t.fromId))}. Run bridge next to read ${queued.length === 1 ? 'it' : 'the first'}.`);
+  if (reports.length) parts.push(`${plural(reports.length, 'report')} from ${names(reports.map(t => t.toId))}. Read with bridge inbox, review, then bridge ack.`);
+  return { text: `[AI Workbench] ${parts.join(' ')}`, key: [...queued, ...reports].map(t => `${t.id}:${t.updatedAt}`).join(','), reports };
+}
+
+// Notices go only into an empty, settled prompt. One the AI didn't act on is repeated a couple of
+// times while its prompt sits free; after that the header badge waits for the user.
+const noticeState = new Map();
+const NOTICE_RETRY_MS = 90000;
+const NOTICE_ATTEMPTS = 3;
+function deliverNotices() {
+  for (const [chatId, pane] of panes) {
+    const view = pane.view;
+    const pending = view.status === 'running' && store.DELEGATION_TOOLS.includes(pane.chat?.tool) ? pendingNotice(chatId) : null;
+    if (!pending) { noticeState.delete(chatId); continue; }
+    const last = noticeState.get(chatId);
+    const repeat = last?.key === pending.key;
+    if (repeat && (last.attempts >= NOTICE_ATTEMPTS || Date.now() - last.at < NOTICE_RETRY_MS)) continue;
+    if (view.submitting || view.promptProblem()) continue;
+    noticeState.set(chatId, { key: pending.key, at: Date.now(), attempts: repeat ? last.attempts + 1 : 1 });
+    view.submitPrompt(pending.text).then(() => {
+      for (const report of pending.reports) {
+        reportNotices.get(chatId)?.delete(report.id);
         const current = taskLedger.tasks.find(t => t.id === report.id);
-        if (current?.updatedAt === report.updatedAt && current.result === report.result && current.status === report.status) taskLedger.update(report.id, { notified: true });
+        if (current?.updatedAt === report.updatedAt) taskLedger.update(report.id, { notified: true });
       }
-    }).catch(() => {
-      // A failed submit can have reached the terminal. Preserve an inspectable notice, never replay it automatically.
-      for (const report of reports) taskLedger.update(report.id, { notificationUnknown: true, notified: true });
-    });
+      if (!reportNotices.get(chatId)?.size) reportNotices.delete(chatId);
+    }).catch(() => {});
   }
 }
-setInterval(deliverReportNotices, 3000);
+setInterval(deliverNotices, 3000);
 
 backend.resetTerminals().then(() => backend.listenDelegation(request => {
   if (!taskLedger) throw new Error('Task storage is unavailable; no prompt was sent.');
@@ -1436,9 +1476,10 @@ backend.resetTerminals().then(() => backend.listenDelegation(request => {
       notice = `AI report: ${chatById(task.toId)?.title ?? 'worker'} → ${chatById(task.fromId)?.title ?? 'requester'} (${task.status})`;
       renderStatus();
       if (state.settings.notifications) backend.notify('AI Workbench task report', `${chatById(task.toId)?.title ?? 'worker'} · ${task.toId.slice(0, 8)} · ${task.status} · task ${task.id}. Read AI handoffs or bridge inbox.`);
-      setTimeout(deliverReportNotices, 0);
+      setTimeout(deliverNotices, 0);
     },
-  });
+    onQueued: () => setTimeout(deliverNotices, 0),
+  }).finally(() => { for (const pane of panes.values()) pane.renderQueue(); });
 })).catch(error => { notice = `AI delegation unavailable: ${error}`; }).finally(() => {
   render();
   watchUsage();

@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import * as store from '../src/store.js';
 import { handleDelegation, resolveTarget, briefing } from '../src/delegation.js';
 import { ProjectBoard } from '../src/board.js';
+import { TaskLedger } from '../src/task-ledger.js';
+function taskStorage() {
+  let value = null;
+  return { getItem: () => value, setItem: (_, next) => { value = next; } };
+}
 
 function setup() {
   const state = store.emptyState();
@@ -42,11 +47,14 @@ test('every AI chat in a project reaches every other one; other projects stay ou
   assert.equal(listed.project.name, 'Wrestling');
   assert.deepEqual(listed.chats.map(c => [c.name, c.relation]), [['Animations', 'reports to you'], ['Review', 'under you'], ['Unconnected', 'teammate']]);
   assert.equal(listed.chats[1].parentName, 'Animations');
-  await handleDelegation(state, panes, request('send', other.id, 'Review the grapple'));
-  assert.equal(other.received, 'Review the grapple');
+  const ledger = new TaskLedger(taskStorage());
+  await handleDelegation(state, panes, request('send', other.id, 'Review the grapple'), () => {}, ledger);
+  assert.deepEqual(ledger.queued(other.id).map(t => t.prompt), ['Review the grapple']);
   const away = store.addChat(state, 'claude', store.addProject(state, 'Elsewhere', '/elsewhere').id, 'Outsider');
   panes.set(away.id, { display: 'ready', view: { id: 99, status: 'running' } });
   await assert.rejects(handleDelegation(state, panes, request('read', away.title)), /No AI chat in this project/);
+  await assert.rejects(handleDelegation(state, panes, request('send', away.id), () => {}, ledger), /No AI chat in this project/);
+  assert.equal(ledger.queued(away.id).length, 0);
   const loose = store.addChat(state, 'codex', null, 'Loose');
   assert.deepEqual(store.delegationTargets(state, loose.id), []);
 });
@@ -63,37 +71,49 @@ test('a unique renamed chat resolves; ambiguous names require IDs', () => {
   assert.throws(() => resolveTarget(state, parent.id, 'grapples'), /Several/);
   assert.equal(resolveTarget(state, parent.id, child.id).id, child.id);
 });
-test('send targets the existing terminal and read reports its output', async () => {
+test('send queues the task without typing into the target, and read reports its output', async () => {
   const { state, child, panes, request } = setup();
   const log = [];
-  const result = await handleDelegation(state, panes, request('send'), h => log.push(h));
+  const ledger = new TaskLedger(taskStorage());
+  const result = await handleDelegation(state, panes, request('send'), h => log.push(h), ledger);
   assert.equal(result.accepted, true);
-  assert.equal(child.received, 'Implement the grapple animation');
+  assert.equal(result.status, 'queued');
+  assert.equal(child.received, undefined);
+  assert.equal(ledger.queued(child.id)[0].prompt, 'Implement the grapple animation');
   assert.equal(log[0].to, 'Animations');
   assert.equal((await handleDelegation(state, panes, request('read'))).text, 'Result from Animations');
 });
-test('stale callers, closed helpers, expired requests and control characters are rejected', async () => {
+test('stale callers, expired requests, control characters and missing storage are rejected', async () => {
   const { state, child, panes, request } = setup();
-  await assert.rejects(handleDelegation(state, panes, { ...request('send'), source: { chatId: request('send').source.chatId, terminalId: 999 } }), /ended/);
-  await assert.rejects(handleDelegation(state, panes, { ...request('send'), expiresAt: 1 }), /expired/);
-  await assert.rejects(handleDelegation(state, panes, request('send', child.id, '\x1b[2J')), /control/);
+  const ledger = new TaskLedger(taskStorage());
+  await assert.rejects(handleDelegation(state, panes, { ...request('send'), source: { chatId: request('send').source.chatId, terminalId: 999 } }, () => {}, ledger), /ended/);
+  await assert.rejects(handleDelegation(state, panes, { ...request('send'), expiresAt: 1 }, () => {}, ledger), /expired/);
+  await assert.rejects(handleDelegation(state, panes, request('send', child.id, '\x1b[2J'), () => {}, ledger), /control/);
+  await assert.rejects(handleDelegation(state, panes, request('send')), /storage/);
   panes.get(child.id).view.status = 'exited';
-  await assert.rejects(handleDelegation(state, panes, request('send')), /closed or stopped/);
+  await assert.rejects(handleDelegation(state, panes, request('read')), /closed or stopped/);
+  assert.equal(ledger.tasks.length, 0);
   assert.equal(child.received, undefined);
 });
-test('a busy or approval-blocked terminal refuses the task without logging a handoff', async () => {
-  const { state, child, panes, request } = setup();
-  panes.get(child.id).view.submitPrompt = async () => { throw new Error('Target is busy or needs user input'); };
-  let logged = false;
-  await assert.rejects(handleDelegation(state, panes, request('send'), () => { logged = true; }), /busy/);
-  assert.equal(logged, false);
-  assert.equal(child.received, undefined);
+test('busy, approval-blocked and closed chats still receive queued tasks; nothing is typed into them', async () => {
+  const { state, child, grandchild, other, panes, request } = setup();
+  const ledger = new TaskLedger(taskStorage());
+  for (const chat of [child, grandchild, other]) panes.get(chat.id).view.submitPrompt = async () => { throw new Error('Must not type into the target'); };
+  panes.get(child.id).view.deliveryState = () => ({ state: 'approval_pending', canAccept: false, reason: 'A user must review the approval in this chat. No prompt was sent.' });
+  panes.get(grandchild.id).view.deliveryState = () => ({ state: 'busy', canAccept: false, reason: 'The agent is working.' });
+  panes.get(other.id).view.status = 'exited';
+  const queued = [];
+  for (const chat of [child, grandchild, other]) assert.equal((await handleDelegation(state, panes, request('send', chat.id), () => {}, ledger, { onQueued: t => queued.push(t.toId) })).status, 'queued');
+  assert.deepEqual(queued, [child.id, grandchild.id, other.id]);
+  const listed = await handleDelegation(state, panes, request('list'), () => {}, ledger);
+  assert.deepEqual(listed.chats.map(c => [c.status, c.queued, c.canAccept]), [['approval_pending', 1, true], ['busy', 1, true], ['ready', 1, true]]);
 });
 
 test('Windows multiline prompts keep line breaks without inserting terminal controls', async () => {
   const { state, child, panes, request } = setup();
-  await handleDelegation(state, panes, request('send', child.id, 'Implement grapples\r\nReview animations'));
-  assert.equal(child.received, 'Implement grapples\nReview animations');
+  const ledger = new TaskLedger(taskStorage());
+  await handleDelegation(state, panes, request('send', child.id, 'Implement grapples\r\nReview animations'), () => {}, ledger);
+  assert.equal(ledger.queued(child.id)[0].prompt, 'Implement grapples\nReview animations');
 });
 
 test('local-model helpers retain their server, model, session and parent through reload', () => {
@@ -109,18 +129,18 @@ test('local-model helpers retain their server, model, session and parent through
   assert.equal(resolveTarget(restored, parent.id, 'Local review').id, helper.id);
 });
 
-import { TaskLedger } from '../src/task-ledger.js';
-function taskStorage() {
-  let value = null;
-  return { getItem: () => value, setItem: (_, next) => { value = next; } };
-}
 test('tracked handoffs survive restart and workers report while their parent is busy', async () => {
   const { state, parent, child, panes, request } = setup();
   const storage = taskStorage();
   const ledger = new TaskLedger(storage);
   const sent = await handleDelegation(state, panes, request('send'), () => {}, ledger);
-  assert.ok(child.received.includes(sent.taskId));
   const restored = new TaskLedger(storage);
+  const claimed = await handleDelegation(state, panes, { source: { chatId: child.id, terminalId: 2 }, method: 'next' }, () => {}, restored);
+  assert.equal(claimed.task.id, sent.taskId);
+  assert.equal(claimed.task.prompt, 'Implement the grapple animation');
+  assert.equal(claimed.task.from, 'Lead');
+  assert.match(claimed.instructions, new RegExp(`bridge complete ${sent.taskId}`));
+  assert.equal(child.received, undefined);
   const report = { source: { chatId: child.id, terminalId: 2 }, method: 'complete', target: sent.taskId, prompt: 'Changed animations.gd; checks passed.' };
   panes.get(parent.id).view.submitPrompt = () => { throw new Error('Parent must not receive terminal input'); };
   await handleDelegation(state, panes, report, () => {}, restored);
@@ -150,18 +170,32 @@ test('storage failure prevents dispatch and uncertain delivery is never replayed
   storage.setItem = () => { throw new Error('Storage full'); };
   await assert.rejects(handleDelegation(state, panes, request('send'), () => {}, ledger), /Storage full/);
   assert.equal(child.received, undefined);
-  const secondStorage = taskStorage();
-  const second = new TaskLedger(secondStorage);
-  panes.get(child.id).view.submitPrompt = async () => { throw new Error('Connection lost'); };
-  await assert.rejects(handleDelegation(state, panes, request('send'), () => {}, second), /Delivery was not confirmed/);
-  assert.equal(new TaskLedger(secondStorage).tasks[0].status, 'delivery_unknown');
+  assert.equal(ledger.tasks.length, 0);
 });
-test('readiness checks prevent creating tasks for blocked terminals', async () => {
+test('next claims only the caller\'s oldest queued task; cancel withdraws only unclaimed tasks of the requester', async () => {
+  const { state, parent, child, grandchild, panes, request } = setup();
+  const ledger = new TaskLedger(taskStorage());
+  const as = (chat, method, target = '', prompt = '') => handleDelegation(state, panes, { source: { chatId: chat.id, terminalId: state.chats.indexOf(chat) + 1 }, method, target, prompt }, () => {}, ledger);
+  const first = await handleDelegation(state, panes, request('send', child.id, 'First'), () => {}, ledger);
+  const second = await handleDelegation(state, panes, request('send', child.id, 'Second'), () => {}, ledger);
+  assert.equal(second.position, 2);
+  assert.equal((await as(grandchild, 'next')).task, null);
+  await assert.rejects(as(child, 'cancel', second.taskId), /requester/);
+  const claimed = await as(child, 'next');
+  assert.equal(claimed.task.id, first.taskId);
+  assert.equal(claimed.remaining, 1);
+  await assert.rejects(as(parent, 'cancel', first.taskId), /before the worker claims/);
+  assert.equal((await as(parent, 'cancel', second.taskId)).task.status, 'cancelled');
+  assert.equal((await as(child, 'next')).task, null);
+  child.projectId = store.addProject(state, 'Elsewhere', '/elsewhere').id;
+  await handleDelegation(state, panes, request('send', grandchild.id, 'Third'), () => {}, ledger);
+  assert.equal((await as(child, 'next')).task, null, 'a chat moved to another project cannot claim its old project\'s tasks');
+});
+test('queues are bounded per chat', async () => {
   const { state, child, panes, request } = setup();
   const ledger = new TaskLedger(taskStorage());
-  panes.get(child.id).view.promptProblem = () => 'Approval required';
-  await assert.rejects(handleDelegation(state, panes, request('send'), () => {}, ledger), /Approval/);
-  assert.equal(ledger.tasks.length, 0);
+  for (let i = 0; i < 20; i++) await handleDelegation(state, panes, request('send', child.id, `Task ${i}`), () => {}, ledger);
+  await assert.rejects(handleDelegation(state, panes, request('send', child.id, 'One more'), () => {}, ledger), /20 queued/);
 });
 
 test('a descendant worker can report to its original ancestor requester', async () => {
@@ -184,13 +218,13 @@ test('history capacity protects unread reports and preserves acknowledged audit 
   assert.equal(ledger.tasks.length, 201);
   assert.ok(ledger.tasks.some(t => t.id === first));
 });
-test('tracked prompt size reserves space for reporting instructions', async () => {
+test('task prompts are limited to 32000 characters', async () => {
   const { state, child, panes, request } = setup();
   const ledger = new TaskLedger(taskStorage());
-  await assert.rejects(handleDelegation(state, panes, request('send', child.id, 'x'.repeat(31501)), () => {}, ledger), /31500/);
+  await assert.rejects(handleDelegation(state, panes, request('send', child.id, 'x'.repeat(32001)), () => {}, ledger), /32000/);
   assert.equal(ledger.tasks.length, 0);
-  await handleDelegation(state, panes, request('send', child.id, 'x'.repeat(31500)), () => {}, ledger);
-  assert.ok(child.received.length <= 32000);
+  await handleDelegation(state, panes, request('send', child.id, 'x'.repeat(32000)), () => {}, ledger);
+  assert.equal(ledger.tasks.length, 1);
 });
 
 test('the project board shares notes within a project and survives restart', async () => {

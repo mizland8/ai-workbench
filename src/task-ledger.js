@@ -4,7 +4,13 @@ import { delegationTargets } from './store.js';
 // an explicit worker report, never an inference from an idle terminal screen.
 const KEY = 'ai-workbench.tasks.v1';
 const LIMIT = 200;
-const statuses = ['dispatching', 'submitted', 'delivery_unknown', 'completed', 'failed', 'cancelled'];
+// queued → claimed → completed/failed. dispatching, submitted and delivery_unknown come from
+// versions that typed whole tasks into the worker's terminal; they stay readable and resolvable.
+const statuses = ['queued', 'claimed', 'dispatching', 'submitted', 'delivery_unknown', 'completed', 'failed', 'cancelled'];
+export const OPEN_STATUSES = ['queued', 'claimed', 'dispatching', 'submitted', 'delivery_unknown'];
+
+// What a worker reads with bridge next, after the task itself.
+export const reportInstructions = id => `[AI Workbench task ${id}] Using the executable in AI_WORKBENCH_CLI, report with bridge complete ${id} <summary>, or bridge fail ${id} <reason>. Include changed files and checks in your summary. This report is saved for the requesting AI even while it is busy. Do not infer success from terminal status. Then run bridge next for any further tasks.`;
 
 export class TaskLedger {
   constructor(storage) {
@@ -28,9 +34,14 @@ export class TaskLedger {
     const tasks = this.tasks.slice();
     if (tasks.filter(t => !t.acknowledged).length >= LIMIT) throw new Error('Task history is full: 200 unresolved or unread tasks. Acknowledge reports with bridge ack before sending more tasks. Existing audit history is preserved.');
     const at = new Date().toISOString();
-    const task = { id: crypto.randomUUID(), fromId, toId, prompt, at, updatedAt: at, status: 'dispatching' };
+    const task = { id: crypto.randomUUID(), fromId, toId, prompt, at, updatedAt: at, status: 'queued' };
     this.commit([...tasks, task]);
     return task;
+  }
+
+  // Tasks waiting for `chatId` to claim them, oldest first.
+  queued(chatId) {
+    return this.tasks.filter(t => t.toId === chatId && t.status === 'queued');
   }
 
   update(id, changes) {
@@ -46,9 +57,23 @@ export class TaskLedger {
       const reports = this.tasks.filter(t => visible(t) && t.fromId === sourceId && ['completed', 'failed'].includes(t.status) && !t.acknowledged);
       return { reports: reports.slice(0, 5).map(({ prompt, ...task }) => task), remaining: Math.max(0, reports.length - 5) };
     }
+    if (request.method === 'next') {
+      // The worker pulls its task, so nothing longer than a one-line notice is ever typed into its terminal.
+      const queue = this.tasks.filter(t => visible(t) && t.toId === sourceId && t.status === 'queued');
+      if (!queue.length) return { task: null, remaining: 0, note: 'No queued tasks for you.' };
+      const claimedAt = new Date().toISOString();
+      this.update(queue[0].id, { status: 'claimed', claimedAt });
+      const task = this.tasks.find(t => t.id === queue[0].id);
+      return { task: { ...task, from: state.chats.find(c => c.id === task.fromId)?.title ?? task.fromId }, instructions: reportInstructions(task.id), remaining: queue.length - 1 };
+    }
     const task = this.tasks.find(t => t.id === request.target && visible(t));
     if (!task) throw new Error('No accessible task has that ID. Use bridge tasks.');
     if (request.method === 'task') return { task };
+    if (request.method === 'cancel') {
+      if (task.fromId !== sourceId || task.status !== 'queued') throw new Error('Only the requester can withdraw a task, and only before the worker claims it.');
+      this.update(task.id, { status: 'cancelled', acknowledged: true, cancelledAt: new Date().toISOString() });
+      return { task: this.tasks.find(t => t.id === task.id) };
+    }
     if (request.method === 'resolve') {
       if (task.fromId !== sourceId || !['dispatching', 'delivery_unknown'].includes(task.status)) throw new Error('Only the requester can resolve uncertain delivery. Inspect bridge read first.');
       const match = /^(delivered|not-delivered)\s+(.+)/s.exec(request.prompt ?? '');

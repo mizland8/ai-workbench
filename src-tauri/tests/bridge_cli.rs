@@ -29,7 +29,7 @@ fn native_client_routes_named_tasks_and_multiline_stdin_without_opening_a_gui() 
     let address = listener.local_addr().unwrap().to_string();
     let server = std::thread::spawn(move || {
         for method in [
-            "list", "read", "send", "tasks", "task", "complete", "fail", "revise-complete", "revise-fail", "resolve", "inbox", "ack",
+            "list", "read", "send", "tasks", "task", "next", "cancel", "complete", "fail", "revise-complete", "revise-fail", "resolve", "inbox", "ack",
         ] {
             let (mut stream, _) = listener.accept().unwrap();
             stream
@@ -42,7 +42,7 @@ fn native_client_routes_named_tasks_and_multiline_stdin_without_opening_a_gui() 
             let request: Value = serde_json::from_str(&line).unwrap();
             assert_eq!(request["token"], "test-private-token");
             assert_eq!(request["method"], method);
-            if !["list", "tasks", "inbox"].contains(&method) {
+            if !["list", "tasks", "next", "inbox"].contains(&method) {
                 assert_eq!(request["target"], "Grapple Animations");
             }
             if ["send", "complete", "fail", "revise-complete", "revise-fail", "resolve"].contains(&method) {
@@ -52,14 +52,14 @@ fn native_client_routes_named_tasks_and_multiline_stdin_without_opening_a_gui() 
         }
     });
     for method in [
-        "list", "read", "send", "tasks", "task", "complete", "fail", "revise-complete", "revise-fail", "resolve", "inbox", "ack",
+        "list", "read", "send", "tasks", "task", "next", "cancel", "complete", "fail", "revise-complete", "revise-fail", "resolve", "inbox", "ack",
     ] {
         let mut command = Command::new(env!("CARGO_BIN_EXE_ai-workbench"));
         command
             .args(["bridge", method])
             .env("AI_WORKBENCH_BRIDGE", &address)
             .env("AI_WORKBENCH_TOKEN", "test-private-token");
-        if !["list", "tasks", "inbox"].contains(&method) {
+        if !["list", "tasks", "next", "inbox"].contains(&method) {
             command.arg("Grapple Animations");
         }
         if ["send", "complete", "fail", "revise-complete", "revise-fail", "resolve"].contains(&method) {

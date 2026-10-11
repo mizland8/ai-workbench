@@ -69,24 +69,28 @@ Each live AI terminal receives a private bridge credential and the `AI_WORKBENCH
 "$AI_WORKBENCH_CLI" bridge board
 ```
 
-In PowerShell use `& $env:AI_WORKBENCH_CLI bridge list` and the equivalent `send`/`read` commands. For multiline prompts, `bridge send "Animations" -` reads stdin. Commands return JSON; failures return a nonzero exit code. `send` confirms submission, not task completion. `read` returns the last 250 terminal lines (up to 64,000 characters), which may include earlier replies and prompts. Tracked prompts are limited to 31,500 characters to leave room for reporting instructions. Every `send` returns a `taskId` and includes reporting instructions in the helper's prompt. Use the following commands to track the assignment:
+In PowerShell use `& $env:AI_WORKBENCH_CLI bridge list` and the equivalent `send`/`read` commands. For multiline prompts, `bridge send "Animations" -` reads stdin. Commands return JSON; failures return a nonzero exit code. `read` returns the last 250 terminal lines (up to 64,000 characters), which may include earlier replies and prompts.
+
+`send` queues a task (up to 32,000 characters) for any AI chat in the same project, even one that is busy, waiting for approval, holding your draft or closed, and returns a `taskId`. The task itself is never typed into the helper's terminal. Once the helper's prompt is empty and settled, Workbench types one line, such as `[AI Workbench] 1 task waiting from Lead. Run bridge next to read it.`, and the helper collects the task and its reporting instructions with `bridge next`. If the helper doesn't act on the notice, it is repeated twice more while the prompt sits free; after that, the helper's header shows a **queued** badge that puts the notice in its prompt for you to send. Each chat holds up to 20 queued tasks. Sending the same task again returns the one already queued. Use the following commands to track the assignment:
 
 ```bash
 "$AI_WORKBENCH_CLI" bridge tasks
 "$AI_WORKBENCH_CLI" bridge task <task-id>
-# Assigned worker, even while the requesting AI is busy:
+# Assigned worker: collect the oldest queued task, then report, even while the requesting AI is busy:
+"$AI_WORKBENCH_CLI" bridge next
 "$AI_WORKBENCH_CLI" bridge complete <task-id> "Changed animations.gd; checks passed."
 "$AI_WORKBENCH_CLI" bridge fail <task-id> "Blocked by missing assets."
 # Requesting AI:
+"$AI_WORKBENCH_CLI" bridge cancel <task-id>   # withdraw a task before it is claimed
 "$AI_WORKBENCH_CLI" bridge inbox
 "$AI_WORKBENCH_CLI" bridge ack <task-id>
 ```
 
 `complete` and `fail` also accept `-` for multiline stdin. Reports stay in the inbox until acknowledged; each inbox response returns up to five reports. `tasks` returns summaries, while `task` returns the prompt and full report. Completion is a worker's claim: the parent should review files and checks. When a report arrives, the requester gets a one-line notice telling it to run `bridge inbox`, typed only once its prompt is free; nothing is typed into a busy terminal, an approval question or your draft. The project board keeps the latest 100 notes per project and survives restarts; **AI handoffs…** shows them too.
 
-Task history is saved in local webview storage and survives app restarts. Workbench allows up to 200 unresolved or unread tasks and retains acknowledged reports and their audit history. If storage cannot be saved, it refuses new assignments or reports. A task left `dispatching` or `delivery_unknown` has uncertain delivery: inspect the terminal before retrying. Workbench never automatically replays it. Task access is limited to its participants and rechecks that both are still in the same project. Closing a helper does not erase its report.
+Task history is saved in local webview storage and survives app restarts. Workbench allows up to 200 unresolved or unread tasks and retains acknowledged reports and their audit history. If storage cannot be saved, it refuses new assignments or reports. Tasks move from `queued` to `claimed` to `completed` or `failed`. Tasks left `dispatching` or `delivery_unknown` by earlier versions had uncertain delivery; inspect the terminal and settle them with `bridge resolve`. Workbench never replays them. Task access is limited to its participants and rechecks that both are still in the same project. Closing a helper does not erase its report.
 
-Handoffs are refused while a helper is working, requesting approval, at an unrecognized screen, still settling, or has manually typed input. Readiness is inferred from each CLI's terminal screen, so CLI changes can require pattern updates. Approval prompts remain for you to answer. The AIs share project files; assign separate files or tasks and have the parent review changes.
+Notices wait while a helper is working, requesting approval, at an unrecognized screen, still settling, or has manually typed input. Readiness is inferred from each CLI's terminal screen, so CLI changes can delay a notice, but they cannot lose or garble a task. Approval prompts remain for you to answer. The AIs share project files; assign separate files or tasks and have the parent review changes.
 
 ## CLI and session permissions
 

@@ -1,4 +1,7 @@
 import { delegationTargets, DELEGATION_TOOLS } from './store.js';
+import { OPEN_STATUSES } from './task-ledger.js';
+
+const QUEUE_LIMIT = 20;
 
 const DELEGATION_TOOLS_SET = new Set(DELEGATION_TOOLS);
 
@@ -15,7 +18,6 @@ export function resolveTarget(state, sourceId, target) {
 }
 
 const toolNames = { claude: 'Claude Code', codex: 'Codex', agy: 'Antigravity CLI', opencode: 'OpenCode', local: 'Local model' };
-const openStatuses = ['dispatching', 'submitted', 'delivery_unknown'];
 
 // How `chat` relates to `source`: the tree shows who leads whom; everyone in a project can talk.
 function relation(state, sourceId, chat) {
@@ -28,25 +30,26 @@ function relation(state, sourceId, chat) {
   return 'teammate';
 }
 
-export async function handleDelegation(state, panes, request, onSend = () => {}, ledger = null, { board = null, onReport = () => {} } = {}) {
+export async function handleDelegation(state, panes, request, onSend = () => {}, ledger = null, { board = null, onReport = () => {}, onQueued = () => {} } = {}) {
   if (request.expiresAt && Date.now() >= request.expiresAt) throw new Error('Handoff request expired. No prompt was sent.');
   const source = panes.get(request.source.chatId);
   if (!source || source.view.id !== request.source.terminalId || source.view.status !== 'running') throw new Error('The requesting terminal has ended.');
   const me = state.chats.find(c => c.id === source.chatId);
   const project = state.projects.find(p => p.id === me?.projectId) ?? null;
+  // status is what the chat's screen shows now. It is informational: tasks queue whatever the screen
+  // shows, and the worker claims them with bridge next.
   const describe = chat => {
     const view = panes.get(chat.id)?.view;
-    let delivery = view?.deliveryState?.();
+    const delivery = view?.deliveryState?.();
     const parent = state.chats.find(c => c.id === chat.parentId);
-    const working = ledger?.tasks.filter(t => t.toId === chat.id && openStatuses.includes(t.status)).map(t => ({ taskId: t.id, from: state.chats.find(c => c.id === t.fromId)?.title ?? t.fromId, prompt: t.prompt.slice(0, 160) })) ?? [];
-    if (delivery?.canAccept && working.length) delivery = { state: 'task_pending', canAccept: false, reason: `Task ${working[0].taskId} is unresolved. Inspect bridge task/read and obtain a worker report before another send.` };
+    const working = ledger?.tasks.filter(t => t.toId === chat.id && OPEN_STATUSES.includes(t.status)).map(t => ({ taskId: t.id, status: t.status, from: state.chats.find(c => c.id === t.fromId)?.title ?? t.fromId, prompt: t.prompt.slice(0, 160) })) ?? [];
     const note = project && board?.latest(project.id, chat.id);
-    return { id: chat.id, name: chat.title, tool: chat.tool, toolName: toolNames[chat.tool] ?? chat.tool, parentId: chat.parentId ?? null, parentName: parent?.title ?? null, relation: chat.id === me.id ? 'you' : relation(state, me.id, chat), label: `${chat.title} · ${toolNames[chat.tool] ?? chat.tool} · ${chat.id}`, status: delivery?.state ?? panes.get(chat.id)?.display ?? 'closed', canAccept: delivery?.canAccept ?? false, reason: delivery?.reason ?? null, openTasks: working, ...(note ? { lastNote: { text: note.text.slice(0, 300), at: note.at } } : {}) };
+    return { id: chat.id, name: chat.title, tool: chat.tool, toolName: toolNames[chat.tool] ?? chat.tool, parentId: chat.parentId ?? null, parentName: parent?.title ?? null, relation: chat.id === me.id ? 'you' : relation(state, me.id, chat), label: `${chat.title} · ${toolNames[chat.tool] ?? chat.tool} · ${chat.id}`, status: delivery?.state ?? panes.get(chat.id)?.display ?? 'closed', canAccept: !!ledger, screen: delivery?.reason ?? null, queued: working.filter(t => t.status === 'queued').length, openTasks: working, ...(note ? { lastNote: { text: note.text.slice(0, 300), at: note.at } } : {}) };
   };
   if (request.method === 'list') {
     await Promise.all([...panes.values()].map(p => p.view.refreshPrompt?.()));
     return { you: describe(me), project: project ? { id: project.id, name: project.name, path: project.path } : null, chats: delegationTargets(state, me.id).map(describe),
-      note: project ? 'Every AI chat in this project is listed. Stay in this project: work only in its folder. Closed chats must be opened in Workbench before they can receive tasks.' : 'This chat is not in a project, so only its parent and the chats under it are listed.' };
+      note: project ? 'Every AI chat in this project is listed. Stay in this project: work only in its folder. bridge send queues a task for any of them, busy or closed; it is picked up with bridge next once that chat is free.' : 'This chat is not in a project, so only its parent and the chats under it are listed.' };
   }
   if (request.method === 'post' || request.method === 'board') {
     if (!board) throw new Error('The project board is unavailable.');
@@ -54,45 +57,31 @@ export async function handleDelegation(state, panes, request, onSend = () => {},
     if (request.method === 'post') return { posted: board.post(project.id, me, request.prompt) };
     return { project: project.name, notes: board.read(project.id) };
   }
-  if (['tasks', 'task', 'complete', 'fail', 'revise-complete', 'revise-fail', 'inbox', 'ack', 'resolve'].includes(request.method)) {
+  if (['tasks', 'task', 'next', 'cancel', 'complete', 'fail', 'revise-complete', 'revise-fail', 'inbox', 'ack', 'resolve'].includes(request.method)) {
     if (!ledger) throw new Error('Task tracking is unavailable.');
     const result = ledger.handle(state, source.chatId, request);
     if (['complete', 'fail', 'revise-complete', 'revise-fail'].includes(request.method) && result.reportChanged !== false && result.task && !result.task.acknowledged) onReport(result.task);
     return result;
   }
   const chat = resolveTarget(state, source.chatId, request.target);
-  const target = panes.get(chat.id);
-  if (!target || target.view.status !== 'running') throw new Error('The target chat is closed or stopped. Open it in Workbench first.');
-  if (request.method === 'read') return { ...describe(chat), text: target.view.transcript(), observedAt: new Date().toISOString(), lastOutputAt: target.view.lastOutputAt, note: 'Terminal output may include prompts and earlier replies. Verify task completion yourself.' };
+  if (request.method === 'read') {
+    const target = panes.get(chat.id);
+    if (!target || target.view.status !== 'running') throw new Error('The target chat is closed or stopped. Open it in Workbench first.');
+    return { ...describe(chat), text: target.view.transcript(), observedAt: new Date().toISOString(), lastOutputAt: target.view.lastOutputAt, note: 'Terminal output may include prompts and earlier replies. Verify task completion yourself.' };
+  }
   if (request.method !== 'send') throw new Error('Unknown delegation command.');
+  if (!ledger) throw new Error('Task storage is unavailable; no task was queued.');
   if (typeof request.prompt === 'string') request.prompt = request.prompt.replace(/\r\n/g, '\n');
   if (typeof request.prompt !== 'string' || !request.prompt.trim() || request.prompt.length > 32000 || /[\x00-\x08\x0b-\x1f\x7f]/.test(request.prompt)) throw new Error('Provide a prompt of 1–32000 characters without terminal control characters.');
-  if (ledger && request.prompt.length > 31500) throw new Error('Tracked task prompts must be at most 31500 characters to leave room for reporting instructions.');
-  await target.view.refreshPrompt?.();
-  if (request.expiresAt && Date.now() >= request.expiresAt) throw new Error('Handoff request expired after refresh. No prompt was sent.');
-  if (source.view.id !== request.source.terminalId || source.view.status !== 'running') throw new Error('The requesting terminal has ended.');
-  const outstanding = ledger?.tasks.find(t => t.toId === chat.id && openStatuses.includes(t.status));
-  if (outstanding && outstanding.fromId === source.chatId && outstanding.prompt === request.prompt) {
-    const problem = target.view.promptProblem?.();
-    return { accepted: outstanding.status === 'submitted' && !problem, taskId: outstanding.id, status: outstanding.status, duplicate: true, ...(problem ? { error: problem } : {}), note: 'Existing task returned; no prompt replayed. Inspect bridge task/read if delivery is uncertain.' };
-  }
-  if (outstanding) throw new Error(`Target has unresolved task ${outstanding.id} (${outstanding.status}). Inspect bridge task/read; obtain a worker report before sending another task.`);
-  let task;
-  if (ledger) {
-    const problem = target.view.promptProblem?.();
-    if (problem) throw new Error(problem);
-    task = ledger.create(source.chatId, chat.id, request.prompt);
-  }
-  const prompt = task ? `${request.prompt}\n\n[AI Workbench task ${task.id}] Using the executable in AI_WORKBENCH_CLI, report with bridge complete ${task.id} <summary>, or bridge fail ${task.id} <reason>. Include changed files and checks in your summary. This report is saved for the requesting AI even while it is busy. Do not infer success from terminal status.` : request.prompt;
-  try {
-    await target.view.submitPrompt(prompt);
-    if (task && ledger.tasks.find(t => t.id === task.id)?.status === 'dispatching') ledger.update(task.id, { status: 'submitted' });
-  } catch (error) {
-    if (task) ledger.update(task.id, { status: 'delivery_unknown', result: String(error?.message ?? error) });
-    throw new Error(task ? `Task ${task.id}: ${error?.message ?? error}. Delivery was not confirmed; inspect the task and terminal before retrying.` : error?.message ?? error);
-  }
-  onSend({ from: state.chats.find(c => c.id === source.chatId)?.title, to: chat.title, prompt: request.prompt, at: new Date().toISOString() });
-  return { accepted: true, ...(task ? { taskId: task.id } : {}), ...describe(chat), note: task ? 'Prompt submitted. Use bridge task for progress and bridge inbox for worker reports. Review changes before accepting success.' : 'Prompt submitted. Use bridge list/read to check progress and results.' };
+  // The same request retried (a lost reply, a nervous AI) returns the task it already queued.
+  const existing = ledger.tasks.find(t => t.fromId === source.chatId && t.toId === chat.id && t.prompt === request.prompt && ['queued', 'claimed'].includes(t.status));
+  if (existing) return { accepted: true, taskId: existing.id, status: existing.status, duplicate: true, chat: describe(chat), note: 'This task is already queued or claimed; nothing new was queued.' };
+  if (ledger.queued(chat.id).length >= QUEUE_LIMIT) throw new Error(`${chat.title} already has ${QUEUE_LIMIT} queued tasks. Wait for it to claim some, or withdraw one with bridge cancel.`);
+  const task = ledger.create(source.chatId, chat.id, request.prompt);
+  onSend({ from: me.title, to: chat.title, prompt: request.prompt, at: task.at });
+  onQueued(task);
+  const position = ledger.queued(chat.id).findIndex(t => t.id === task.id) + 1;
+  return { accepted: true, taskId: task.id, status: 'queued', position, chat: describe(chat), note: `Queued for ${chat.title}. Workbench tells it to run bridge next as soon as its prompt is free; nothing is typed into a busy chat, a draft or an approval. Use bridge task to follow it, bridge cancel to withdraw it before it is claimed, and bridge inbox for the report.` };
 }
 
 // What every AI chat is told when it starts: who it is, which project it works in, and how to reach
@@ -114,7 +103,7 @@ export function briefing(state, chatId) {
     team.length ? `Your team right now: ${team.join(', ')}.` : 'No other AI chats are in this project yet.',
     'You coordinate with them through the Workbench bridge: run the program whose path is in the AI_WORKBENCH_CLI environment variable with the arguments bridge help, then bridge list.',
     'bridge list shows the live team with each chat\'s role, status, open tasks and latest note. bridge board reads the project notes; bridge post followed by a note shares what you are doing, which files you own, and what you finished, so teammates know your updates. Post when you start and finish meaningful work.',
-    'Use bridge send to give a teammate a task when the user asks you to involve other AIs or the work clearly needs it, and split file ownership so edits do not collide. When you receive a task tagged AI Workbench task, report with bridge complete or bridge fail. When a teammate reports back you get a short notice; read it with bridge inbox and acknowledge with bridge ack.',
+    'Use bridge send to give a teammate a task when the user asks you to involve other AIs or the work clearly needs it, and split file ownership so edits do not collide. bridge send queues the task; the teammate is told to collect it. When Workbench tells you a task is waiting, run bridge next to read it, then report with bridge complete or bridge fail. When a teammate reports back you get a short notice; read it with bridge inbox and acknowledge with bridge ack.',
     'The bridge is the only way to reach a teammate: never use computer use, screen control, window automation or simulated keystrokes to type into another chat or terminal.',
     'If a bridge command fails, quote its exact error. Never claim a teammate did not respond without checking bridge list, bridge tasks and bridge read. Never answer another AI\'s approval prompts and never print AI_WORKBENCH_TOKEN.',
   ].filter(Boolean).join(' ');
