@@ -132,6 +132,19 @@ test('a new chat opens on its project page; Claude chats get a session ID', () =
   assert.throws(() => store.addChat(state, 'claude', 'nope'), /Unknown project/);
 });
 
+test('a local-model chat switches model and keeps its conversation', () => {
+  const state = store.emptyState();
+  const chat = store.addChat(state, 'local', null, '', { server: 'http://192.168.1.20:1234', model: 'qwen/qwen3-coder-30b' });
+  chat.sessionId = 'ses_1';
+  store.switchModel(chat, 'google/gemma-3-27b');
+  assert.deepEqual([chat.title, chat.model, chat.server, chat.sessionId], ['gemma-3-27b', 'google/gemma-3-27b', 'http://192.168.1.20:1234', 'ses_1']);
+  chat.title = 'Refactor';
+  store.switchModel(chat, 'openai/gpt-oss-20b');
+  assert.deepEqual([chat.title, chat.model], ['Refactor', 'openai/gpt-oss-20b']);
+  assert.throws(() => store.switchModel(chat, ' '), /local-model chat/);
+  assert.throws(() => store.switchModel(store.addChat(state, 'codex', null), 'x'), /local-model chat/);
+});
+
 test('a local-model chat runs in OpenCode, keeps its server and model, and is named after the model', () => {
   const state = store.emptyState();
   const chat = store.addChat(state, 'local', null, '', { server: 'http://192.168.1.20:1234', model: 'qwen/qwen3-coder-30b' });

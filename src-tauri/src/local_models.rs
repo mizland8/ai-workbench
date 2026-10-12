@@ -23,6 +23,8 @@ pub struct LocalServer {
     /// "LM Studio", "Ollama" or "Model server".
     name: &'static str,
     models: Vec<String>,
+    /// The models LM Studio has in memory now; empty when the server doesn't say.
+    loaded: Vec<String>,
 }
 
 /// `192.168.1.20:1234`, `http://desktop:1234/v1/` and the like, written as `http://192.168.1.20:1234`.
@@ -71,6 +73,18 @@ fn chat_models(body: &Value) -> Vec<String> {
         .collect()
 }
 
+/// LM Studio's own `/api/v0/models` says which models are in memory (`"state": "loaded"`).
+fn loaded_models(body: &Value) -> Vec<String> {
+    body["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|model| model["state"] == "loaded")
+        .filter_map(|model| model["id"].as_str())
+        .map(String::from)
+        .collect()
+}
+
 /// Ollama answers `/api/version`; LM Studio's server listens on port 1234 unless told otherwise.
 fn server_name(client: &Client, server: &str) -> &'static str {
     let ollama = client
@@ -96,7 +110,16 @@ fn ask(client: &Client, server: &str) -> Result<LocalServer, String> {
         return Err(format!("{server} answered, but not with a list of models ({}). Is it LM Studio, Ollama or another OpenAI-compatible server?", response.status()));
     }
     let body: Value = response.json().map_err(|_| format!("{server} answered, but not like LM Studio or Ollama would."))?;
-    Ok(LocalServer { server: server.to_string(), name: server_name(client, server), models: chat_models(&body) })
+    let name = server_name(client, server);
+    let loaded = client
+        .get(format!("{server}/api/v0/models"))
+        .send()
+        .ok()
+        .filter(|response| response.status().is_success())
+        .and_then(|response| response.json::<Value>().ok())
+        .map(|body| loaded_models(&body))
+        .unwrap_or_default();
+    Ok(LocalServer { server: server.to_string(), name, models: chat_models(&body), loaded })
 }
 
 fn find(address: &str) -> Result<LocalServer, String> {
@@ -147,6 +170,16 @@ mod tests {
         ] });
         assert_eq!(chat_models(&body), ["qwen/qwen3-coder-30b", "qwen2.5-coder:7b"]);
         assert!(chat_models(&json!({ "error": "no" })).is_empty());
+    }
+
+    #[test]
+    fn lm_studio_says_which_models_are_loaded() {
+        let body = json!({ "object": "list", "data": [
+            { "id": "qwen/qwen3-coder-30b", "type": "llm", "state": "loaded" },
+            { "id": "google/gemma-3-27b", "type": "vlm", "state": "not-loaded" },
+        ] });
+        assert_eq!(loaded_models(&body), ["qwen/qwen3-coder-30b"]);
+        assert!(loaded_models(&json!({ "error": "Unexpected endpoint" })).is_empty());
     }
 
     #[test]

@@ -254,6 +254,14 @@ export function addChat(state, tool, projectId, title = '', local = null, parent
   return chat;
 }
 
+// A local-model chat can change model and keep its conversation. A title that was only the old
+// model's name follows the new one.
+export function switchModel(chat, model) {
+  if (chat?.tool !== 'local' || !String(model ?? '').trim()) throw new Error('Only a local-model chat can switch to another model');
+  if (chat.title === modelLabel(chat.model)) chat.title = modelLabel(model);
+  chat.model = model;
+}
+
 export function ensureSessionId(chat) {
   if (chosenSessionTools.includes(chat.tool) && !chat.sessionId) chat.sessionId = crypto.randomUUID();
 }

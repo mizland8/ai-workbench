@@ -384,6 +384,21 @@ try {
   check('it runs OpenCode with that server and model, without OpenCode’s extra options', localStart.tool === 'opencode' && localStart.local?.server === 'http://192.168.1.20:1234'
     && localStart.local?.model === 'google/gemma-3-12b' && localStart.extraArgs.length === 0, localStart);
   check('its pane is tagged local', await q(`${pane(localChat.id)}?.querySelector('.tool-tag').textContent`) === 'local');
+  check('its header shows the model to switch', await q(`${pane(localChat.id)}.querySelector('.model-button').textContent`) === 'gemma-3-12b ▾'
+    && await q(`!!${pane(localChat.id)}.querySelector('.model-button').hidden === false`));
+  check('other panes have no model button', await q(`[...document.querySelectorAll('.pane')].filter(p => p.dataset.pane !== ${JSON.stringify(localChat.id)}).every(p => p.querySelector('.model-button').hidden)`));
+  await page.eval(`${pane(localChat.id)}.querySelector('.model-button').click();`);
+  await wait(150);
+  check('the model menu lists the chat’s server models and marks the current and loaded ones', (await calls('local_models')).at(-1)?.address === 'http://192.168.1.20:1234'
+    && await q(`[...document.querySelectorAll('#menu [data-menu-item]')].map(b => b.innerText).join('|')`) === 'qwen/qwen3-coder-30b · loaded|✓ google/gemma-3-12b');
+  await page.shot('14e-switch-local-model');
+  const startsBefore = (await calls('terminal_start')).length;
+  await page.eval(`document.querySelector('#menu [data-menu-item="0"]').click();`);
+  await wait(300);
+  const switched = (await saved()).chats.find(c => c.id === localChat.id);
+  const switchStart = (await calls('terminal_start')).at(-1).request;
+  check('picking another model restarts the chat in the same conversation with it', switched.model === 'qwen/qwen3-coder-30b' && switched.title === 'qwen3-coder-30b'
+    && (await calls('terminal_start')).length === startsBefore + 1 && switchStart.local?.model === 'qwen/qwen3-coder-30b' && switchStart.sessionId === switched.sessionId, { switched, switchStart });
   await page.eval(`__AIW_TEST__.localFailure = "Nothing answered at http://192.168.1.20:1234. Check that the model server is running and accepts connections from this computer.";`);
   await click('#toolbar [data-action=new-chat]');
   await wait(200);
@@ -467,7 +482,7 @@ try {
   await wait(2200);
   const afterReload = (await calls('terminal_start')).map(a => a.request);
   check('reload restarts every running chat once', afterReload.length === runningCount, { started: afterReload.length, runningCount });
-  check('a local-model chat restarts with its server and model', afterReload.some(r => r.tool === 'opencode' && r.local?.model === 'google/gemma-3-12b'), afterReload.map(r => r.local));
+  check('a local-model chat restarts with its server and the model it switched to', afterReload.some(r => r.tool === 'opencode' && r.local?.model === 'qwen/qwen3-coder-30b'), afterReload.map(r => r.local));
   check('codex resumes its saved session and stays pinned', afterReload.find(r => r.tool === 'codex')?.sessionId === running.chats.find(c => c.id === codex).sessionId && await q(`${pane(codex)}.parentElement.id`) === 'dock');
   check('reload returns to the same page', (await saved()).page === running.page);
 

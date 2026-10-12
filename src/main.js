@@ -245,6 +245,7 @@ class Pane {
     this.el.innerHTML = `<header class="pane-header" title="Drag onto another pane to swap them">
         <span class="tool-tag"></span><span class="pane-title"></span><span class="pane-project"></span><span class="agent-state"></span>
         <button class="small-button queue-badge" data-action="queue-notice" data-id="${escape(chat.id)}" hidden></button><span class="pane-cwd"></span>
+        <button class="small-button model-button" data-action="switch-model" data-id="${escape(chat.id)}" hidden></button>
         <button class="small-button" data-action="attach" data-id="${escape(chat.id)}" title="Insert file paths into the prompt">+ file</button>
         <button class="small-button pin-button" data-action="pin" data-id="${escape(chat.id)}"></button>
         <button class="small-button" data-action="pane-menu" data-id="${escape(chat.id)}" title="More">···</button>
@@ -340,6 +341,10 @@ class Pane {
     const cwd = projectPath(chat) || homePath;
     this.el.querySelector('.pane-cwd').textContent = pinned ? '' : shortPath(cwd);
     this.el.querySelector('.pane-cwd').title = cwd;
+    const model = this.el.querySelector('.model-button');
+    model.hidden = chat.tool !== 'local';
+    model.textContent = `${store.modelLabel(chat.model)} ▾`;
+    model.title = `Switch model: ${chat.model} on ${chat.server}. The conversation carries on with the model you pick.`;
     const pin = this.el.querySelector('.pin-button');
     pin.textContent = pinned ? 'unpin' : 'pin';
     pin.title = pinned ? 'Unpin: move back to its project page' : 'Pin: keep this chat on the right on every page';
@@ -704,7 +709,7 @@ function settingsDialog({ focus = '' } = {}) {
     <fieldset><legend>Local models</legend>
       <label class="row">Model server<input name="localServer" value="${escape(s.localServer)}" placeholder="this computer" autocomplete="off" spellcheck="false"></label>
       <div class="local-status"></div>
-      <p class="dialog-note">For “Local model” chats: LM Studio, Ollama, or another server with the same OpenAI-compatible API. Leave this empty to use one on this computer, or enter another computer’s address and port, such as 192.168.1.20:1234 for LM Studio or 192.168.1.20:11434 for Ollama; that server has to accept connections from the network. The chats run in OpenCode with the model you pick.</p>
+      <p class="dialog-note">For “Local model” chats: LM Studio, Ollama, or another server with the same OpenAI-compatible API. Leave this empty to use one on this computer, or enter another computer’s address and port, such as 192.168.1.20:1234 for LM Studio or 192.168.1.20:11434 for Ollama; that server has to accept connections from the network. The chats run in OpenCode with the model you pick; switch it later from the model button in the chat’s header. To run one model at a time in LM Studio, turn on Just-in-Time model loading and “Only keep last JIT loaded model” in its Developer settings, and it swaps models as you switch.</p>
     </fieldset>
     <div class="dialog-actions"><button type="submit" class="primary">done</button></div>`, { className: 'settings-dialog' });
   const form = dialog.querySelector('form');
@@ -1180,6 +1185,40 @@ async function sessionPermissionsDialog(id) {
     });
 }
 
+// The models on a local-model chat's server; picking one restarts OpenCode in the chat with that
+// model, in the same conversation. LM Studio loads it when asked (with JIT loading on).
+function modelMenu(el) {
+  const chat = chatById(el.dataset.id);
+  if (chat?.tool !== 'local') return;
+  const at = el.textContent;
+  el.textContent = 'checking…';
+  backend.localModels(chat.server).then(found => {
+    el.textContent = at;
+    if (!found.models.length) { notice = `${found.name} at ${found.server} has no models.`; renderStatus(); return; }
+    showMenu(el, found.models.map(model => {
+      const marks = [model === chat.model ? '✓ ' : '', escape(model), found.loaded.includes(model) ? ' <span class="dim">· loaded</span>' : ''].join('');
+      return [marks, () => switchModel(chat.id, model)];
+    }));
+  }, error => {
+    el.textContent = at;
+    notice = String(error?.message ?? error);
+    renderStatus();
+  });
+}
+
+function switchModel(id, model) {
+  const chat = chatById(id), pane = panes.get(id);
+  if (!chat || chat.model === model) return;
+  // Restarting would cut off a reply, a question or an unsent prompt.
+  const busy = { busy: 'it’s still working', approval_pending: 'it’s waiting for your approval', user_input_required: 'it’s waiting for your answer', draft_present: 'its prompt has unsent text' };
+  const delivery = pane?.view.status === 'running' ? pane.view.deliveryState().state : null;
+  if (busy[delivery]) { notice = `${chat.title} can’t switch model while ${busy[delivery]}.`; renderStatus(); return; }
+  store.switchModel(chat, model);
+  save();
+  update();
+  pane?.start();
+}
+
 function chatMenu(el) {
   const chat = chatById(el.dataset.id);
   if (!chat) return;
@@ -1278,6 +1317,7 @@ const actions = {
   'resume': el => panes.get(el.dataset.id)?.start(),
   'new-conversation': el => panes.get(el.dataset.id)?.start({ fresh: true }),
   'pane-menu': el => chatMenu(el),
+  'switch-model': el => modelMenu(el),
   'queue-notice': el => {
     const pane = panes.get(el.dataset.id);
     const pending = pendingNotice(el.dataset.id);
