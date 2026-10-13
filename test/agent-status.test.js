@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { detectAgentState, delegationReady, promptDraft, AgentStatus } from '../src/agent-status.js';
+import { detectAgentState, deliveryState, promptDraft, AgentStatus } from '../src/agent-status.js';
 
 // Bottom lines of real screens, recorded from Claude Code 2.1.284, Codex 0.159.2 and OpenCode 1.18.34.
 const screens = {
@@ -62,10 +62,8 @@ const prompts = {
 test('the prompt reads as empty only when nothing but its placeholder is in it', () => {
   for (const [tool, screen] of Object.entries(prompts)) {
     assert.equal(promptDraft(tool, screen.empty), false, `${tool} empty`);
-    assert.equal(delegationReady(tool, screen.empty), true, `${tool} empty`);
     for (const kind of ['draft', 'multiline']) {
       assert.equal(promptDraft(tool, screen[kind]), true, `${tool} ${kind}`);
-      assert.equal(delegationReady(tool, screen[kind]), false, `${tool} ${kind}`);
     }
   }
   // AGY before 1.2 drew its prompt above a footer instead of between rules.
@@ -127,17 +125,12 @@ test('working shows at once; idle and waiting must hold before they count', () =
   assert.deepEqual(changes, ['starting→working', 'working→idle', 'idle→waiting']);
 });
 
-// Readiness must identify a prompt, not simply the absence of working hints.
-test('delegation rejects menus, sign-in, approvals, and unknown screens', async () => {
-  const { delegationReady } = await import('../src/agent-status.js');
-  // Codex draws its placeholder dim, and readiness reads the screen with dim text blanked.
-  const typed = { opencodeStart: screens.opencodeStart.map(line => line.includes('Ask anything') ? '┃' : line), codexIdle: screens.codexIdle.map(line => line === '› Ask Codex to do anything' ? '›' : line) };
-  for (const name of ['agyIdle', 'codexIdle', 'claudeDone', 'opencodeStart']) {
-    assert.equal(delegationReady(expected[name][0], screens[name], typed[name]), true, name);
-  }
-  for (const name of ['agyApproval', 'agyTrust', 'agyWorking', 'agyGenerating', 'codexApproval', 'codexWorking', 'claudeMenu', 'claudeTrust', 'opencodePermission']) {
-    assert.equal(delegationReady(expected[name][0], screens[name]), false, name);
-  }
-  assert.equal(delegationReady('agy', ['Sign in to Google', '> ', 'Press ? to see keyboard shortcuts.']), false);
-  assert.equal(delegationReady('agy', ['Unknown startup screen']), false);
+// Another AI's message goes in unless the chat is working or asking its user something.
+test('messages wait only for working, approvals, questions and open menus', () => {
+  const ready = (name, lines = screens[name]) => deliveryState({ tool: expected[name]?.[0] ?? name, lines, lastOutputAt: 1 }).canAccept;
+  for (const name of ['agyIdle', 'codexIdle', 'claudeDone', 'opencodeStart']) assert.equal(ready(name), true, name);
+  for (const name of ['agyApproval', 'agyTrust', 'agyWorking', 'agyGenerating', 'codexApproval', 'codexWorking', 'claudeMenu', 'claudeTrust', 'opencodePermission']) assert.equal(ready(name), false, name);
+  // A draft or a screen Workbench doesn't recognise doesn't hold a message back.
+  for (const [tool, screen] of Object.entries(prompts)) for (const kind of ['draft', 'multiline']) assert.equal(ready(tool, screen[kind]), true, `${tool} ${kind}`);
+  assert.equal(ready('agy', ['Unknown startup screen']), true);
 });

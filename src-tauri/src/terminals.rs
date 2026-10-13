@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -32,7 +32,7 @@ pub struct Terminals {
 
 enum TerminalInput {
     Bytes(Vec<u8>),
-    Submit(Vec<u8>, u64, Sender<Result<(), String>>),
+    Submit(Vec<u8>, Sender<Result<(), String>>),
 }
 
 struct Terminal {
@@ -42,7 +42,6 @@ struct Terminal {
     #[cfg_attr(not(unix), allow(dead_code))]
     pid: Option<u32>,
     exited: AtomicBool,
-    output_epoch: AtomicU64,
     pending_prompt: AtomicBool,
 }
 
@@ -401,7 +400,6 @@ fn start_with_bridge(terminals: &Terminals, request: StartRequest, events: Chann
         killer: Mutex::new(child.clone_killer()),
         pid: child.process_id(),
         exited: AtomicBool::new(false),
-        output_epoch: AtomicU64::new(0),
         pending_prompt: AtomicBool::new(false),
     });
     terminals.live.lock().unwrap().insert(id, Arc::clone(&terminal));
@@ -410,7 +408,6 @@ fn start_with_bridge(terminals: &Terminals, request: StartRequest, events: Chann
         send_event(&events, json!({ "type": "notice", "text": notice }));
     }
 
-    let writer_terminal = Arc::clone(&terminal);
     // Typing goes through its own thread: a CLI that isn't reading must not block the UI.
     thread::spawn(move || {
         for chunk in typed {
@@ -418,11 +415,7 @@ fn start_with_bridge(terminals: &Terminals, request: StartRequest, events: Chann
                 TerminalInput::Bytes(bytes) => {
                     if writer.write_all(&bytes).and_then(|_| writer.flush()).is_err() { break; }
                 }
-                TerminalInput::Submit(bytes, expected_epoch, reply) => {
-                    if writer_terminal.output_epoch.load(Ordering::SeqCst) != expected_epoch {
-                        let _ = reply.send(Err("Terminal output changed before delivery; inspect the prompt before retrying".into()));
-                        continue;
-                    }
+                TerminalInput::Submit(bytes, reply) => {
                     let result = writer.write_all(&bytes).and_then(|_| writer.flush()).map_err(|e| format!("PTY delivery failed: {e}"));
                     let failed = result.is_err();
                     let _ = reply.send(result);
@@ -433,18 +426,15 @@ fn start_with_bridge(terminals: &Terminals, request: StartRequest, events: Chann
     });
 
     let output = events.clone();
-    let reader_terminal = Arc::clone(&terminal);
     thread::spawn(move || {
         let mut buf = vec![0u8; 64 * 1024];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let epoch = reader_terminal.output_epoch.fetch_add(1, Ordering::SeqCst) + 1;
                     if output.send(InvokeResponseBody::Raw(buf[..n].to_vec())).is_err() {
                         break;
                     }
-                    send_event(&output, json!({ "type": "outputEpoch", "epoch": epoch }));
                 }
                 Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                 Err(_) => break,
@@ -522,35 +512,34 @@ pub fn terminal_write(terminals: State<'_, Terminals>, id: u32, data: String) ->
 }
 
 // Paste and submit on the writer thread, preserving newlines as a single prompt.
+/// A message from another AI: pasted into the CLI's prompt, then Enter a moment later, once the CLI
+/// has taken the paste in.
 #[tauri::command]
-pub async fn terminal_submit_prompt(terminals: State<'_, Terminals>, id: u32, prompt: String, phase: String, expected_epoch: u64) -> Result<(), String> {
+pub async fn terminal_submit_prompt(terminals: State<'_, Terminals>, id: u32, prompt: String) -> Result<(), String> {
     let terminal = terminals.get(id).ok_or("This session has ended.")?;
-    submit_prompt_to(terminal, prompt, phase, expected_epoch).await
+    tauri::async_runtime::spawn_blocking(move || submit_prompt_to(&terminal, &prompt)).await.map_err(|e| e.to_string())?
 }
 
-async fn submit_prompt_to(terminal: Arc<Terminal>, prompt: String, phase: String, expected_epoch: u64) -> Result<(), String> {
+const PASTE_SETTLE: Duration = Duration::from_millis(400);
+
+fn submit_prompt_to(terminal: &Terminal, prompt: &str) -> Result<(), String> {
     let prompt = prompt.replace("\r\n", "\n");
-    if phase != "cancel" && (prompt.trim().is_empty() || prompt.chars().count() > 32000 || prompt.chars().any(|c| c.is_control() && c != '\n' && c != '\t')) {
+    if prompt.trim().is_empty() || prompt.chars().count() > 40000 || prompt.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
         return Err("Invalid delegation prompt".into());
     }
     if terminal.exited.load(Ordering::SeqCst) { return Err("This session has ended.".into()); }
-    let bytes = match phase.as_str() {
-        "cancel" => { terminal.pending_prompt.store(false, Ordering::SeqCst); return Ok(()); }
-        "prepare" => {
-            if terminal.pending_prompt.swap(true, Ordering::SeqCst) { return Err("Another prompt delivery is in progress".into()); }
-            format!("\x1b[200~{prompt}\x1b[201~").into_bytes()
-        }
-        "commit" => {
-            if !terminal.pending_prompt.load(Ordering::SeqCst) { return Err("No prepared prompt to submit".into()); }
-            vec![b'\r']
-        }
-        _ => return Err("Unknown prompt delivery phase".into()),
+    if terminal.pending_prompt.swap(true, Ordering::SeqCst) { return Err("Another prompt delivery is in progress".into()); }
+    let write = |bytes: Vec<u8>| {
+        let (reply, delivered) = mpsc::channel();
+        terminal.input.send(TerminalInput::Submit(bytes, reply)).map_err(|_| "Target exited before submission".to_string())?;
+        delivered.recv_timeout(Duration::from_secs(5)).map_err(|_| "Delivery confirmation unavailable; inspect the terminal before retrying".to_string())?
     };
-    let (reply, delivered) = mpsc::channel();
-    terminal.input.send(TerminalInput::Submit(bytes, expected_epoch, reply)).map_err(|_| "Target exited before submission")?;
-    tauri::async_runtime::spawn_blocking(move || delivered.recv_timeout(Duration::from_secs(5))
-        .map_err(|_| "Delivery confirmation unavailable; inspect the terminal before retrying".to_string())?)
-        .await.map_err(|e| e.to_string())?
+    let result = write(format!("\x1b[200~{prompt}\x1b[201~").into_bytes()).and_then(|()| {
+        thread::sleep(PASTE_SETTLE);
+        write(vec![b'\r'])
+    });
+    terminal.pending_prompt.store(false, Ordering::SeqCst);
+    result
 }
 
 #[tauri::command]
@@ -765,7 +754,7 @@ mod real_cli_tests {
                 Ok(InvokeResponseBody::Raw(bytes)) => output.extend(bytes),
                 Ok(InvokeResponseBody::Json(json)) => {
                     let event: serde_json::Value = serde_json::from_str(&json).unwrap();
-                    if event["type"] != "notice" && event["type"] != "outputEpoch" {
+                    if event["type"] != "notice" {
                         return Some(event);
                     }
                 }
@@ -783,7 +772,7 @@ mod real_cli_tests {
     }
 
     #[test]
-    fn live_pty_dispatch_rejects_changed_output_and_confirms_writes() {
+    fn live_pty_dispatch_pastes_then_presses_enter() {
         use std::os::unix::fs::PermissionsExt;
         let project = std::env::temp_dir().join(format!("workbench-dispatch-{}", uuid()));
         std::fs::create_dir_all(&project).unwrap();
@@ -797,20 +786,15 @@ mod real_cli_tests {
         let terminal = terminals.get(started.id).unwrap();
         let mut out = Vec::new();
         collect(&rx, &mut out, |text| text.contains("READY"), Duration::from_secs(3));
-        let submit = |phase: &str, epoch: u64| tauri::async_runtime::block_on(submit_prompt_to(terminal.clone(), "harmless probe".into(), phase.into(), epoch));
-        let epoch = terminal.output_epoch.load(Ordering::SeqCst);
-        assert!(submit("prepare", epoch + 1).is_err(), "stale observations must not paste");
-        submit("cancel", epoch).unwrap();
-        submit("prepare", terminal.output_epoch.load(Ordering::SeqCst)).unwrap();
-        collect(&rx, &mut out, |text| text.contains("harmless probe"), Duration::from_secs(3));
-        assert!(!screen_text(&out).contains("COMMITTED"), "paste alone must never press Enter");
-        assert!(submit("prepare", terminal.output_epoch.load(Ordering::SeqCst)).is_err(), "duplicate prepare must be blocked");
-        assert!(submit("commit", terminal.output_epoch.load(Ordering::SeqCst) + 1).is_err(), "changed output must withhold Enter");
-        assert!(!screen_text(&out).contains("COMMITTED"));
-        submit("commit", terminal.output_epoch.load(Ordering::SeqCst)).unwrap();
+        assert!(submit_prompt_to(&terminal, " \n ").is_err(), "an empty message is refused");
+        assert!(submit_prompt_to(&terminal, "bad \x1b[2J escape").is_err(), "control characters are refused");
+        terminal.pending_prompt.store(true, Ordering::SeqCst);
+        assert!(submit_prompt_to(&terminal, "harmless probe").is_err(), "one delivery at a time");
+        terminal.pending_prompt.store(false, Ordering::SeqCst);
+        submit_prompt_to(&terminal, "harmless probe").unwrap();
         collect(&rx, &mut out, |text| text.contains("COMMITTED"), Duration::from_secs(3));
-        assert!(screen_text(&out).contains("COMMITTED"));
-        submit("cancel", terminal.output_epoch.load(Ordering::SeqCst)).unwrap();
+        assert!(screen_text(&out).contains("harmless probe") && screen_text(&out).contains("COMMITTED"));
+        assert!(!terminal.pending_prompt.load(Ordering::SeqCst), "the next delivery may follow");
         terminal.stop(true);
         std::fs::remove_dir_all(project).unwrap();
     }

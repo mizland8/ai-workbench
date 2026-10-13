@@ -9,8 +9,8 @@ const LIMIT = 200;
 const statuses = ['queued', 'claimed', 'dispatching', 'submitted', 'delivery_unknown', 'completed', 'failed', 'cancelled'];
 export const OPEN_STATUSES = ['queued', 'claimed', 'dispatching', 'submitted', 'delivery_unknown'];
 
-// What a worker reads with bridge next, after the task itself.
-export const reportInstructions = id => `[AI Workbench task ${id}] Using the executable in AI_WORKBENCH_CLI, report with bridge complete ${id} <summary>, or bridge fail ${id} <reason>. Include changed files and checks in your summary. This report is saved for the requesting AI even while it is busy. Do not infer success from terminal status. Then run bridge next for any further tasks.`;
+// What a worker is told after the task itself, whether Workbench typed it in or bridge next printed it.
+export const reportInstructions = id => `[AI Workbench task ${id}] Using the executable in AI_WORKBENCH_CLI, report with bridge complete ${id} <summary>, or bridge fail ${id} <reason>. Include changed files and checks in your summary. This report is saved for the requesting AI even while it is busy. Further tasks arrive in your prompt when you finish.`;
 
 export class TaskLedger {
   constructor(storage) {
@@ -58,7 +58,7 @@ export class TaskLedger {
       return { reports: reports.slice(0, 5).map(({ prompt, ...task }) => task), remaining: Math.max(0, reports.length - 5) };
     }
     if (request.method === 'next') {
-      // The worker pulls its task, so nothing longer than a one-line notice is ever typed into its terminal.
+      // Workbench types tasks into the worker's prompt; next lets a worker fetch one itself.
       const queue = this.tasks.filter(t => visible(t) && t.toId === sourceId && t.status === 'queued');
       if (!queue.length) return { task: null, remaining: 0, note: 'No queued tasks for you.' };
       const claimedAt = new Date().toISOString();

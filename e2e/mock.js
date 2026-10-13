@@ -64,17 +64,8 @@
         case 'terminal_submit_prompt': {
           const t = T.terminals[args.id];
           if (!t?.alive) throw new Error('This session has ended');
-          if (args.phase !== 'cancel' && args.expectedEpoch !== t.outputEpoch) throw new Error('Terminal output changed before delivery');
-          if (args.phase === 'prepare') {
-            t.input.push(args.prompt);
-            const mark = { codex: '›', claude: '❯', agy: '>', opencode: '┃' }[t.request.tool] ?? '>';
-            const text = args.prompt.replace(/\n/g, '\r\n  ');
-            const footer = t.request.tool === 'codex' ? '\r\n\r\n? for shortcuts' : t.request.tool === 'opencode' ? '\r\n┃ Build · model\r\n╹▀▀▀\r\ntab agents  ctrl+p commands' : '\r\n────────────────────';
-            t.send(`\x1b[2J\x1b[H────────────────────\r\n${mark} ${text}${footer}`);
-          } else if (args.phase === 'commit') {
-            t.input.push('\r');
-            t.send(args.prompt + '\r\n> ');
-          }
+          t.input.push(args.prompt, '\r');
+          t.send(args.prompt.replace(/\n/g, '\r\n') + '\r\n> ');
           return null;
         }
         case 'terminal_stop_all': return null;
@@ -83,14 +74,8 @@
           const failure = T.fail[request.tool ?? request.kind];
           if (failure) throw failure;
           const id = nextTerminal++;
-          const t = T.terminals[id] = { id, request, input: [], alive: true, outputEpoch: 0, size: [request.cols, request.rows] };
-          t.send = message => {
-            if (typeof message === 'string') {
-              const epoch = ++t.outputEpoch;
-              send(args.events, bytes(message));
-              send(args.events, { type: 'outputEpoch', epoch });
-            } else send(args.events, message);
-          };
+          const t = T.terminals[id] = { id, request, input: [], alive: true, size: [request.cols, request.rows] };
+          t.send = message => send(args.events, typeof message === 'string' ? bytes(message) : message);
           setTimeout(() => t.send(`\x1b[32m${request.tool ?? request.kind}\x1b[0m started (${request.kind}) in ${request.cwd ?? '~'} session=${request.sessionId ?? '-'}\r\n> `), 5);
           if (request.tool === 'codex' && !request.sessionId) setTimeout(() => t.send({ type: 'session', id: `codex-session-${id}` }), 30);
           return { id, sessionId: request.sessionId ?? null, resumed: false, command: 'mock' };

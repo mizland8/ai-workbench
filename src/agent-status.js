@@ -103,52 +103,23 @@ export function promptDraft(tool, lines, textOnly = false) {
   return textOnly ? content : content.trim() !== '';
 }
 
-// Absence of a spinner alone is insufficient: sign-in screens and menus can also be idle.
-// `typed` is the screen without its dim text, as promptDraft wants it.
-export function delegationReady(tool, lines, typed = lines) {
-  if (detectAgentState(tool, lines) !== 'idle') return false;
-  // Earlier replies may discuss sign-in or approvals; only inspect the active prompt/footer.
-  const mark = promptMarks[tool];
-  const first = mark ? lines.findLastIndex(line => line.trimStart().startsWith(mark)) : -1;
-  const text = lines.slice(Math.max(0, first)).join('\n');
-  if (first >= 0 && lines.slice(0, first).some(line => /^\s*(sign in to|log in to)/i.test(line))) return false;
-  if (/enter to confirm|enter.*continue|select (model|provider)|sign in|log in/i.test(text)) return false;
-  if (tool === 'agy' || tool === 'claude') return promptDraft(tool, typed) === false;
-  // Codex hides "? for shortcuts" while its prompt holds text or a menu is open.
-  if (tool === 'codex') return promptDraft(tool, typed) === false;
-  if (tool === 'opencode') return promptDraft(tool, typed) === false && (/tab agents.*ctrl\+p commands/.test(text) || /╹▀/.test(text));
-  return false;
-}
-
-// Shared by discovery and dispatch. Refresh from parsed screen rather than a delayed UI dot.
-export function deliveryState({ tool, lines, typed = lines, status = 'running', id = 1,
-  submitting = false, hasDraft = false, lastInputAt = 0, lastOutputAt = 0, outputEpoch = 0, lastInputEpoch = 0, now = Date.now() }) {
-  const blocked = (state, reason) => ({ state, canAccept: false, reason: `${reason} No prompt was sent.` });
-  if (status !== 'running' || id === null) return blocked('closed', 'Open or resume this terminal in Workbench.');
-  if (submitting) return blocked('busy', 'Another delivery is in progress; inspect bridge tasks.');
-  if (!lastOutputAt) return blocked('stale', 'No terminal screen has arrived yet; wait or resume the terminal.');
+// Whether a chat can take a message from another AI now. Only two things hold one back: the AI is
+// working, or it shows an approval or a question, where a pasted message and Enter would answer it
+// for the user. Anything else, including text in its prompt, gets the message at once.
+export function deliveryState({ tool, lines, status = 'running', id = 1, submitting = false, lastOutputAt = 0 }) {
+  const blocked = (state, reason) => ({ state, canAccept: false, reason });
+  if (status !== 'running' || id === null) return blocked('closed', 'This chat is closed; its tasks are delivered once it is open again.');
+  if (submitting) return blocked('busy', 'A message is being delivered to this chat.');
+  if (!lastOutputAt) return blocked('starting', 'This chat is still starting.');
   const observed = detectAgentState(tool, lines);
   if (observed === 'waiting') {
     const text = lines.slice(-20).join(' ');
     const approval = /permission|approval|following|proceed|trust|allow once|accept this change/i.test(text);
     return blocked(approval ? 'approval_pending' : 'user_input_required', approval
-      ? 'A user must review the approval in this chat.' : 'This chat is waiting for a user answer.');
+      ? 'This chat is waiting for the user to answer an approval; tasks are delivered after that.' : 'This chat is waiting for the user to answer a question; tasks are delivered after that.');
   }
-  if (observed === 'working') return blocked('busy', 'The agent is working; wait for its prompt.');
-  if (now - Math.max(lastInputAt, lastOutputAt) < 1500) return blocked('settling', 'The terminal is changing; retry after it settles.');
-  const draft = promptDraft(tool, typed);
-  const refreshedAfterInput = outputEpoch > lastInputEpoch || lastOutputAt > lastInputAt;
-  if (draft === true || (hasDraft && (draft === null || !refreshedAfterInput)))
-    return blocked('draft_present', 'This chat contains a draft; ask its owner to send or clear it.');
-  if (!delegationReady(tool, lines, typed)) return blocked('unsupported_prompt', 'The current screen is not a recognized empty prompt; inspect bridge read and the chat.');
+  if (observed === 'working') return blocked('busy', 'This chat is working; tasks are delivered when it finishes.');
+  // A menu the user opened (Claude Code's /model, say): Enter would pick its highlighted choice.
+  if (lines.filter(line => line.trim()).slice(-4).some(line => /enter to (confirm|select)/i.test(line))) return blocked('user_input_required', 'This chat has a menu open; tasks are delivered once it is closed.');
   return { state: 'ready', canAccept: true, reason: null };
-}
-
-export function preparedPromptMatches(tool, lines, typed, prompt) {
-  if (detectAgentState(tool, lines) !== 'idle') return false;
-  const content = promptDraft(tool, typed, true);
-  if (typeof content !== 'string' || !content.trim()) return false;
-  // Tall composers may show only the tail. Compare a substantial suffix, ignoring TUI wrapping.
-  const compact = text => text.replace(/\s+/g, '');
-  return compact(content).endsWith(compact(prompt).slice(-160));
 }

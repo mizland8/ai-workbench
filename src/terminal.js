@@ -4,7 +4,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 import { startTerminal, writeTerminal, resizeTerminal, stopTerminal, openLink, submitTerminalPrompt } from './backend.js';
-import { detectAgentState, deliveryState, preparedPromptMatches, AgentStatus } from './agent-status.js';
+import { detectAgentState, deliveryState, promptDraft, AgentStatus } from './agent-status.js';
 import { THEMES, DEFAULT_THEME } from './themes.js';
 
 export const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
@@ -40,9 +40,6 @@ export class TerminalView {
     this.error = '';
     this.lastInputAt = 0;
     this.lastOutputAt = 0;
-    this.outputEpoch = 0;
-    this.lastInputEpoch = 0;
-    this.hasDraft = false;
     this.submitting = false;
     this.exitCode = null;
     this.generation = 0;
@@ -81,9 +78,6 @@ export class TerminalView {
     this.agent.reset();
     this.lastInputAt = Date.now();
     this.lastOutputAt = 0;
-    this.outputEpoch = 0;
-    this.lastInputEpoch = 0;
-    this.hasDraft = false;
     this.submitting = false;
     this.setStatus('starting');
     this.fitNow();
@@ -108,7 +102,6 @@ export class TerminalView {
   }
 
   handleEvent(event) {
-    if (event.type === 'outputEpoch') this.outputEpoch = event.epoch;
     if (event.type === 'exit') {
       this.id = null;
       this.exitCode = event.code ?? null;
@@ -123,8 +116,6 @@ export class TerminalView {
     if (this.submitting) return;
     if (this.status === 'running' && this.id !== null) {
       this.lastInputAt = Date.now();
-      this.lastInputEpoch = this.outputEpoch;
-      this.hasDraft = data !== '\r' && data !== '\x03';
       writeTerminal(this.id, data);
     }
     else if (this.status === 'exited' && data === '\r') this.callbacks.onEvent?.({ type: 'restart' });
@@ -144,10 +135,17 @@ export class TerminalView {
   }
 
   deliveryState() {
-    return deliveryState({ ...this, lines: this.screenLines(), typed: this.screenLines(true) });
+    return deliveryState({ ...this, lines: this.screenLines() });
   }
 
-  promptProblem() { return this.deliveryState().reason; }
+  // Why restarting this chat now would lose something: a reply, an open question, or text the user typed.
+  restartProblem() {
+    if (this.status !== 'running') return null;
+    const { state, reason } = this.deliveryState();
+    if (['busy', 'approval_pending', 'user_input_required'].includes(state)) return reason;
+    if (promptDraft(this.tool, this.screenLines(true)) === true) return 'This chat’s prompt holds an unsent draft; send or clear it first.';
+    return null;
+  }
 
   async refreshPrompt() {
     // xterm.write is asynchronous. A sentinel flushes queued output before inspecting it.
@@ -156,27 +154,17 @@ export class TerminalView {
     return this.deliveryState();
   }
 
+  // Types a message from another AI into the prompt and presses Enter, unless the AI is working or
+  // asking the user something.
   async submitPrompt(prompt) {
-    await this.refreshPrompt();
-    const problem = this.promptProblem();
-    if (problem) throw new Error(problem);
+    const { canAccept, reason } = await this.refreshPrompt();
+    if (!canAccept) throw new Error(reason);
     this.submitting = true;
     const generation = this.generation;
     this.lastInputAt = Date.now();
-    const id = this.id;
     try {
-      await submitTerminalPrompt(id, prompt, 'prepare', this.outputEpoch);
-      this.hasDraft = true;
-      await new Promise(resolve => setTimeout(resolve, 250));
-      await this.refreshPrompt();
-      if (generation !== this.generation || this.status !== 'running' || this.id !== id ||
-          !preparedPromptMatches(this.tool, this.screenLines(), this.screenLines(true), prompt)) {
-        throw new Error('The terminal changed after paste; Enter was withheld. Inspect the draft and approval state before resolving delivery.');
-      }
-      await submitTerminalPrompt(id, prompt, 'commit', this.outputEpoch);
-      this.hasDraft = false;
+      await submitTerminalPrompt(this.id, prompt);
     } finally {
-      await submitTerminalPrompt(id, '', 'cancel', this.outputEpoch).catch(() => {});
       if (generation === this.generation) this.submitting = false;
     }
   }

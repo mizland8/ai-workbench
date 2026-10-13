@@ -522,50 +522,72 @@ try {
   await show('agy', '> \nPress ? to see keyboard shortcuts.');
   await wait(1900);
   check('bridge lists the named helper', (await bridge('list')).chats[0]?.name === 'Animations');
-  const submits = async () => (await calls('terminal_submit_prompt')).filter(a => a.phase === 'commit');
-  const helperSubmits = async () => (await submits()).filter(a => a.prompt.startsWith('[AI Workbench]'));
+  const submits = async () => await calls('terminal_submit_prompt');
+  const terminalOf = id => q(`Object.values(__AIW_TEST__.terminals).findLast(t => t.request.chatId === ${JSON.stringify(id)})?.id`);
+  const helperSubmits = async () => { const id = await terminalOf(helper); return (await submits()).filter(a => a.id === id); };
+  const leadSubmits = async () => { const id = await terminalOf(lead); return (await submits()).filter(a => a.id === id); };
+  const helperInput = () => q(`Object.values(__AIW_TEST__.terminals).find(t => t.request.chatId === ${JSON.stringify(helper)}).input`);
+  const working = 'Thinking…\nPress esc to interrupt generation.';
   const accepted = await bridge('send');
-  await wait(700);
-  const firstNotice = (await submits()).at(-1)?.prompt ?? '';
-  check('bridge send queues the task and types only a one-line notice into the idle helper', accepted.accepted === true && accepted.status === 'queued' && firstNotice.startsWith('[AI Workbench] 1 task waiting from Wrestling Lead. Run bridge next') && !firstNotice.includes('grapple') && !firstNotice.includes('\n'), { accepted, firstNotice });
+  await wait(2500);
+  const firstTask = (await helperSubmits()).at(-1)?.prompt ?? '';
+  check('bridge send types the task itself into the idle helper and presses Enter', accepted.accepted === true && firstTask.startsWith(`[AI Workbench] Task ${accepted.taskId} from Wrestling Lead:`)
+    && firstTask.includes('Implement the grapple animation') && firstTask.includes(`bridge complete ${accepted.taskId}`) && (await helperInput()).at(-1) === '\r', { accepted, firstTask });
+  check('a delivered task counts as claimed', (await bridge('task', accepted.taskId)).task?.status === 'claimed');
+  await show('agy', working);
+  await wait(300);
   const workerBridge = (method, target, prompt) => page.eval(`return __AIW_TEST__.bridge({ source: { chatId: ${JSON.stringify(helper)}, terminalId: Object.values(__AIW_TEST__.terminals).find(t => t.request.chatId === ${JSON.stringify(helper)}).id }, method: ${JSON.stringify(method)}, target: ${JSON.stringify(target)}, prompt: ${JSON.stringify(prompt)} });`);
-  const claimed = await workerBridge('next');
-  check('the helper collects the full task with bridge next', claimed.task?.id === accepted.taskId && claimed.task.prompt === 'Implement the grapple animation' && claimed.instructions.includes(`bridge complete ${accepted.taskId}`), claimed);
+  check('nothing is left for bridge next', (await workerBridge('next')).task === null);
   await show('codex', 'Working…\n• Working (esc to interrupt)');
-  const submitsBeforeReport = (await calls('terminal_submit_prompt')).length;
+  await wait(300);
+  const leadBefore = (await leadSubmits()).length;
   const completed = await workerBridge('complete', accepted.taskId, 'Updated animation.gd; checks passed.');
-  check('worker completion is queued while its parent is busy', completed.task?.status === 'completed' && (await calls('terminal_submit_prompt')).length === submitsBeforeReport);
+  await wait(2500);
+  check('a report waits while its requester is working', completed.task?.status === 'completed' && (await leadSubmits()).length === leadBefore);
   check('parent inbox returns the explicit worker report', (await bridge('inbox')).reports[0]?.result === 'Updated animation.gd; checks passed.');
+  await show('codex', '› \n\n? for shortcuts');
+  await wait(3800);
+  const reportPrompt = (await leadSubmits()).at(-1)?.prompt ?? '';
+  check('the report goes into the requester’s prompt once it stops working', (await leadSubmits()).length === leadBefore + 1 && reportPrompt.includes('Updated animation.gd; checks passed.') && reportPrompt.includes(`bridge ack ${accepted.taskId}`), reportPrompt);
   check('bridge reads helper terminal output', typeof (await bridge('read')).text === 'string');
-  await page.eval(`${pane(helper)}.querySelector('.xterm-helper-textarea').focus();`);
-  await page.type('x');
-  await show('agy', '> x\nPress ? to see keyboard shortcuts.');
-  await wait(1900);
-  let noticesBefore = (await helperSubmits()).length;
+  let sentBefore = (await helperSubmits()).length;
   const second = await bridge('send', 'Animations', 'Second task');
-  await wait(3500);
-  check('a task sent to a chat with a draft is queued, and nothing is typed over the draft', second.status === 'queued' && (await helperSubmits()).length === noticesBefore, second);
+  await wait(2500);
+  check('a task for a working chat waits in its queue', second.status === 'queued' && (await helperSubmits()).length === sentBefore && (await bridge('task', second.taskId)).task?.status === 'queued');
   check('the helper header shows its queued task', await q(`${pane(helper)}.querySelector('.queue-badge').textContent`) === '1 queued' && !(await q(`${pane(helper)}.querySelector('.queue-badge').hidden`)));
-  await page.key('Backspace', { keyCode: 8 });
-  await wait(20);
   await show('agy', '> \nPress ? to see keyboard shortcuts.');
   await wait(3800);
-  check('clearing the draft lets the queued task notice through', (await helperSubmits()).length === noticesBefore + 1);
-  await workerBridge('next');
-  check('the badge clears once the helper collects its task', await q(`${pane(helper)}.querySelector('.queue-badge').hidden`));
+  check('it goes in as soon as the chat finishes', (await helperSubmits()).length === sentBefore + 1 && (await helperSubmits()).at(-1).prompt.includes('Second task'));
+  check('the badge clears once the task is delivered', await q(`${pane(helper)}.querySelector('.queue-badge').hidden`));
   const rule = '─'.repeat(40);
   for (const [screen, label, settle] of [
-    ['> \nwrapped draft remains\nPress ? to see keyboard shortcuts.', 'multiline AGY draft', 1900],
-    [`${rule}\n> half-written idea\n${rule}\n    Gemini 3.8 Flash · high`, 'current AGY prompt box with text', 1900],
-    ['Do you want to proceed?\n❯ Yes\nNo', 'approval screen', 1900],
-    ['Thinking…\nPress esc to interrupt generation.', 'working screen', 300],
+    ['> x\nPress ? to see keyboard shortcuts.', 'a draft in the prompt', 1900],
+    ['> \nwrapped draft remains\nPress ? to see keyboard shortcuts.', 'a multiline AGY draft', 1900],
+    [`${rule}\n> half-written idea\n${rule}\n    Gemini 3.8 Flash · high`, 'text in the current AGY prompt box', 1900],
+    ['Some screen Workbench has never seen', 'an unrecognised screen', 1900],
   ]) {
+    await show('agy', working);
+    await wait(300);
     await show('agy', screen);
     await wait(settle);
-    noticesBefore = (await helperSubmits()).length;
+    sentBefore = (await helperSubmits()).length;
+    const sent = await bridge('send', 'Animations', `Task during ${label}`);
+    await wait(2500);
+    check(`${label} doesn't hold a task back`, (await helperSubmits()).length === sentBefore + 1 && (await helperSubmits()).at(-1).prompt.includes(`Task during ${label}`), sent);
+  }
+  for (const [screen, label, settle] of [
+    ['Do you want to proceed?\n❯ Yes\nNo', 'an approval question', 1900],
+    [' Select model\n ❯ 1. Default (recommended)\n   2. Opus\n Enter to confirm · Esc to cancel', 'an open menu', 1900],
+    [working, 'work in progress', 300],
+  ]) {
+    await show('agy', working);
+    await wait(300);
+    await show('agy', screen);
+    await wait(settle);
+    sentBefore = (await helperSubmits()).length;
     const queued = await bridge('send', 'Animations', `Task during ${label}`);
-    await wait(3500);
-    check(`${label} queues the task and receives no typing`, queued.status === 'queued' && (await helperSubmits()).length === noticesBefore, queued);
+    await wait(2500);
+    check(`${label} holds the task, and nothing is typed`, queued.status === 'queued' && (await helperSubmits()).length === sentBefore, queued);
     await bridge('cancel', queued.taskId);
   }
   await show('agy', `${rule}\n>\n${rule}\n? for shortcuts    Gemini 3.8 Flash · high`);
@@ -599,11 +621,13 @@ try {
   await bridge('ack', accepted.taskId);
   await show('codex', '› \x1b[2mAsk Codex to do anything\x1b[0m\n\n? for shortcuts');
   await wait(1900);
+  const leadInput = () => q(`Object.values(__AIW_TEST__.terminals).find(t => t.request.chatId === ${JSON.stringify(lead)}).input`);
+  const inputBefore = (await leadInput()).length;
   await rightClick(lead);
   await menuItem('Delegation instructions');
   await click('dialog [type=submit]');
   await wait(200);
-  const setupInput = await q(`Object.values(__AIW_TEST__.terminals).find(t => t.request.chatId === ${JSON.stringify(lead)}).input.join('')`);
+  const setupInput = (await leadInput()).slice(inputBefore).join('');
   check('delegation instructions are inserted into the parent without auto-submission', setupInput.includes('AI Workbench project') && !setupInput.includes('\r'));
   // The fake line editor echoes at its cursor; redraw the real composer's populated state explicitly.
   await show('codex', '› user-owned draft\n\n? for shortcuts');
