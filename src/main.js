@@ -1,3 +1,4 @@
+import { coordinationPolicy } from './coordination.js';
 import './styles.css';
 import * as store from './store.js';
 import * as backend from './backend.js';
@@ -1247,7 +1248,7 @@ function parentDialog(id) {
 }
 
 function delegationDialog(id) {
-  const instructions = 'Work with the other AI chats in this AI Workbench project. Run the executable named by the AI_WORKBENCH_CLI environment variable with the arguments bridge help, then bridge list. On macOS/Linux: "$AI_WORKBENCH_CLI" bridge list. On Windows PowerShell: & $env:AI_WORKBENCH_CLI bridge list. Stay in this project’s folder. Share what you are doing and which files you own with bridge post, and read teammates’ notes with bridge board. Send tasks with bridge send; Workbench types each one into the teammate’s prompt as soon as it isn’t working. Tasks sent to you arrive the same way: do the work, then report with bridge complete or bridge fail. Inspect tasks with bridge tasks/task, withdraw an unclaimed one with bridge cancel, and read reports with bridge inbox, then bridge ack. Quote exact bridge errors; never claim a teammate did not respond without checking bridge list, tasks and read. Never answer another AI’s approval prompts. Do not print or share AI_WORKBENCH_TOKEN.';
+  const instructions = 'Work with the other AI chats in this AI Workbench project. Run the executable named by the AI_WORKBENCH_CLI environment variable with the arguments bridge help, then bridge list. On macOS/Linux: "$AI_WORKBENCH_CLI" bridge list. On Windows PowerShell: & $env:AI_WORKBENCH_CLI bridge list. Stay in this project’s folder. Share what you are doing and which files you own with bridge post, and read teammates’ notes with bridge board. Send tasks with bridge send; Workbench types each one into the teammate’s prompt as soon as it isn’t working. Tasks sent to you arrive the same way: do the work, then report with bridge complete or bridge fail. Inspect tasks with bridge tasks/task, withdraw an unclaimed one with bridge cancel, and read reports with bridge inbox, then bridge ack. Quote exact bridge errors; a pending task alone does not mean a teammate is unresponsive. Never answer another AI’s approval prompts. Do not print or share AI_WORKBENCH_TOKEN. ' + coordinationPolicy;
   showDialog(`<h2>AI delegation</h2><p class="dialog-note">Every AI chat in a project can reach the others; each one is told its project, its team and these commands when it starts. Use this to remind a chat mid-conversation. Right-click a chat → Open AI under this chat, or move one under another, to show who leads.</p>
     <p class="form-error" hidden></p><label>Instructions<textarea rows="8" readonly>${escape(instructions)}</textarea></label>
     <p class="dialog-note">Insert these into the chat, then press Enter to send. After that you can say: “Ask Codex to review what Claude changed.”</p>
@@ -1467,7 +1468,7 @@ function nextDelivery(chatId) {
   if (task) return { task, text: `[AI Workbench] Task ${task.id} from ${name(task.fromId)}:\n\n${task.prompt}\n\n${reportInstructions(task.id)}` };
   const reports = [...(reportNotices.get(chatId) ?? [])].map(id => taskLedger?.tasks.find(t => t.id === id)).filter(t => t && !t.acknowledged).slice(0, 3);
   if (!reports.length) return null;
-  const text = reports.map(t => `[AI Workbench] ${name(t.toId)} reported on task ${t.id}: ${t.status}.\n\n${t.result.length > 6000 ? `${t.result.slice(0, 6000)}… (the full report is in bridge inbox)` : t.result}\n\nReview it, then acknowledge it with bridge ack ${t.id}.`).join('\n\n');
+  const text = reports.map(t => `[AI Workbench] ${name(t.toId)} reported on task ${t.id}: ${t.status}.\n\n${t.result.length > 6000 ? `${t.result.slice(0, 6000)}… (the full report is in bridge inbox)` : t.result}\n\nReview it, then acknowledge it with bridge ack ${t.id}. ${coordinationPolicy}`).join('\n\n');
   return { reports, text };
 }
 

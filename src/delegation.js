@@ -1,3 +1,4 @@
+import { coordinationPolicy } from './coordination.js';
 import { delegationTargets, DELEGATION_TOOLS } from './store.js';
 import { OPEN_STATUSES } from './task-ledger.js';
 
@@ -81,7 +82,7 @@ export async function handleDelegation(state, panes, request, onSend = () => {},
   onSend({ from: me.title, to: chat.title, prompt: request.prompt, at: task.at });
   onQueued(task);
   const position = ledger.queued(chat.id).findIndex(t => t.id === task.id) + 1;
-  return { accepted: true, taskId: task.id, status: 'queued', position, chat: describe(chat), note: `Sent to ${chat.title}. Workbench types it into ${chat.title}’s prompt and presses Enter as soon as it isn’t working or asking its user something; until then it waits in the queue. Use bridge task to follow it, bridge cancel to withdraw it before it is delivered, and bridge inbox for the report.` };
+  return { accepted: true, taskId: task.id, status: 'queued', position, chat: describe(chat), note: `Sent to ${chat.title}. Workbench types it into ${chat.title}’s prompt and presses Enter as soon as it isn’t working or asking its user something; until then it waits in the queue. Continue your own work; the report will arrive automatically. Use bridge cancel to withdraw it before delivery. ${coordinationPolicy}` };
 }
 
 // What every AI chat is told when it starts: who it is, which project it works in, and how to reach
@@ -104,7 +105,8 @@ export function briefing(state, chatId) {
     'You coordinate with them through the Workbench bridge: run the program whose path is in the AI_WORKBENCH_CLI environment variable with the arguments bridge help, then bridge list.',
     'bridge list shows the live team with each chat\'s role, status, open tasks and latest note. bridge board reads the project notes; bridge post followed by a note shares what you are doing, which files you own, and what you finished, so teammates know your updates. Post when you start and finish meaningful work.',
     'Use bridge send to give a teammate a task when the user asks you to involve other AIs or the work clearly needs it, and split file ownership so edits do not collide. bridge send delivers the task straight into the teammate’s prompt, or as soon as it finishes what it is doing. Tasks sent to you arrive in your prompt the same way, marked [AI Workbench] Task: do the work, then report with bridge complete or bridge fail. When a teammate reports back, its report arrives in your prompt; review it and acknowledge it with bridge ack.',
+    coordinationPolicy,
     'The bridge is the only way to reach a teammate: never use computer use, screen control, window automation or simulated keystrokes to type into another chat or terminal.',
-    'If a bridge command fails, quote its exact error. Never claim a teammate did not respond without checking bridge list, bridge tasks and bridge read. Never answer another AI\'s approval prompts and never print AI_WORKBENCH_TOKEN.',
+    'If a bridge command fails, quote its exact error. A pending task alone is not evidence that a teammate is unresponsive. Never answer another AI\'s approval prompts and never print AI_WORKBENCH_TOKEN.',
   ].filter(Boolean).join(' ');
 }

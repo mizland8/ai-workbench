@@ -1,3 +1,4 @@
+import { coordinationPolicy } from './coordination.js';
 import { delegationTargets } from './store.js';
 
 // Persist reports rather than typing into a busy parent's terminal. Completion is
@@ -10,7 +11,7 @@ const statuses = ['queued', 'claimed', 'dispatching', 'submitted', 'delivery_unk
 export const OPEN_STATUSES = ['queued', 'claimed', 'dispatching', 'submitted', 'delivery_unknown'];
 
 // What a worker is told after the task itself, whether Workbench typed it in or bridge next printed it.
-export const reportInstructions = id => `[AI Workbench task ${id}] Using the executable in AI_WORKBENCH_CLI, report with bridge complete ${id} <summary>, or bridge fail ${id} <reason>. Include changed files and checks in your summary. This report is saved for the requesting AI even while it is busy. Further tasks arrive in your prompt when you finish.`;
+export const reportInstructions = id => `[AI Workbench task ${id}] Using the executable in AI_WORKBENCH_CLI, report with bridge complete ${id} <summary>, or bridge fail ${id} <reason>. Include changed files and checks in your summary. This report is saved for the requesting AI even while it is busy. Further tasks arrive in your prompt when you finish. ${coordinationPolicy}`;
 
 export class TaskLedger {
   constructor(storage) {

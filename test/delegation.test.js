@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import * as store from '../src/store.js';
 import { handleDelegation, resolveTarget, briefing } from '../src/delegation.js';
 import { ProjectBoard } from '../src/board.js';
+import { readFileSync } from 'node:fs';
+import { coordinationPolicy } from '../src/coordination.js';
+import { reportInstructions } from '../src/task-ledger.js';
 import { TaskLedger } from '../src/task-ledger.js';
 function taskStorage() {
   let value = null;
@@ -267,4 +270,18 @@ test('each AI is briefed on its name, project, lead and team in one shell-safe l
   assert.match(text, /Stay within this project/);
   assert.doesNotMatch(text, /["%&|<>^`\n]/);
   assert.equal(briefing(state, store.addChat(state, 'shell', parent.projectId, 'Shell').id), null);
+});
+
+test('coordination entry points prescribe independent work and standby instead of polling', async () => {
+  const { state, parent, panes, request } = setup();
+  const ledger = new TaskLedger(taskStorage());
+  const sent = await handleDelegation(state, panes, request('send'), () => {}, ledger);
+  for (const text of [briefing(state, parent.id), sent.note, reportInstructions(sent.taskId)]) {
+    assert.ok(text.includes(coordinationPolicy));
+    assert.doesNotMatch(text, /Use bridge task to follow|without checking bridge list/);
+  }
+  // CLI help is compiled separately; keep its guidance consistent with prompt delivery.
+  assert.ok(readFileSync(new URL('../src-tauri/src/bridge.rs', import.meta.url), 'utf8').includes(coordinationPolicy));
+  assert.match(coordinationPolicy, /check bridge inbox once/);
+  assert.match(coordinationPolicy, /end your turn and remain on standby/);
 });
