@@ -245,6 +245,11 @@ pub fn companion_enable(
         while !thread_stop.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((socket, _)) => {
+                    // macOS/BSD sockets inherit the listener's non-blocking mode; Linux and Windows do not.
+                    // Blocking I/O with timeouts is required by the TLS stream in serve().
+                    if socket.set_nonblocking(false).is_err() {
+                        continue;
+                    }
                     if inner.active.fetch_add(1, Ordering::SeqCst) >= 24 {
                         inner.active.fetch_sub(1, Ordering::SeqCst);
                         continue;
