@@ -1,5 +1,6 @@
 pub mod bridge;
 mod companion;
+mod mesh;
 mod env;
 mod local_models;
 mod sessions;
@@ -86,13 +87,17 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(terminals::Terminals::default())
         .manage(companion::Companion::default())
+        .manage(mesh::Mesh::default())
         .setup(|app| {
             app.manage(bridge::Bridge::new()?);
+            let remote_app=app.handle().clone();
+            std::thread::spawn(move || mesh::restore(remote_app));
             // Reading the login shell's environment takes a moment; start before the first chat needs it.
             std::thread::spawn(env::user_env);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            mesh::mesh_status, mesh::mesh_enable, mesh::mesh_action, mesh::mesh_pairing,
             companion::companion_status, companion::companion_enable, companion::companion_disable,
             companion::companion_pairing, companion::companion_revoke, companion::companion_publish,
             companion::companion_listen, companion::companion_respond, companion::companion_remote,
@@ -116,6 +121,7 @@ pub fn run() {
         .expect("error while building AI Workbench")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
+                app.state::<mesh::Mesh>().stop();
                 app.state::<companion::Companion>().stop();
                 app.state::<terminals::Terminals>().stop_all(false);
             }

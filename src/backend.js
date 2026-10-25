@@ -141,3 +141,7 @@ export async function listenCompanion(handler) {
   });
   await invoke('companion_listen', { events: companionEvents });
 }
+export const meshStatus = () => invoke('mesh_status');
+export const meshEnable = (name, port) => invoke('mesh_enable', { name, port });
+export const meshAction = action => invoke('mesh_action', { action });
+export const meshPairing = () => invoke('mesh_pairing');

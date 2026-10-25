@@ -9,9 +9,11 @@ import java.util.UUID;
 
 /** Opt-in test of a localhost-only Rust TLS fixture through adb reverse. Does not alter user PCs. */
 public class TransportTestRunner extends Instrumentation {
-    @Override public void onCreate(Bundle args){super.onCreate(args);start();}
+    private String mode;
+    @Override public void onCreate(Bundle args){super.onCreate(args);mode=args.getString("mode","");start();}
     private void require(boolean condition,String reason)throws Exception{if(!condition)throw new Exception(reason);}
     @Override public void onStart(){
+        if("network".equals(mode)){testNetwork();return;}
         Bundle results=new Bundle();String id="transport-test-"+UUID.randomUUID();LinkClient client=new LinkClient(getTargetContext());
         try{
             ParcelFileDescriptor file=getUiAutomation().executeShellCommand("cat /data/local/tmp/aiw-companion-test-pairing.json");
@@ -29,4 +31,21 @@ public class TransportTestRunner extends Instrumentation {
         }catch(Exception e){results.putString("stream","FAIL: "+e.toString()+"\n");finish(0,results);}
         finally{client.forget(id);}
     }
+    private void testNetwork(){
+        Bundle results=new Bundle();
+        try{
+            RemoteNetwork.captureNativeLogs(getTargetContext());
+            go.Seq.setContext(getTargetContext());
+            String dir=new java.io.File(getTargetContext().getCacheDir(),"network-runtime-test").getAbsolutePath();
+            netcore.Netcore.start(dir,"workbench-android-test","");netcore.Netcore.login();
+            JSONObject state=null;
+            for(int i=0;i<25;i++){state=new JSONObject(netcore.Netcore.status());if(!state.optString("authUrl").isEmpty()||"Running".equals(state.optString("state")))break;Thread.sleep(1000);}
+            require(state!=null&&state.optBoolean("enabled"),"Embedded network did not start");
+            require(!state.optBoolean("systemVpn"),"Unexpected system VPN interface");
+            require(!state.optString("authUrl").isEmpty()||"Running".equals(state.optString("state")),"No interactive sign-in available");
+            netcore.Netcore.stop();
+            results.putString("stream","PASS: Android native networking loads, starts without a system VPN, and offers interactive sign-in\n");finish(-1,results);
+        }catch(Exception e){try{netcore.Netcore.stop();}catch(Exception ignored){}results.putString("stream","FAIL: "+e.toString()+"\n");finish(0,results);}
+    }
+
 }

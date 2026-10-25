@@ -36,10 +36,13 @@ export function startCompanion({ state, panes, getUsage, openChat, showDialog, e
   catch (error) { console.error(error.message); }
   let enabled = false, publishing = false, delivering = new Set(), lastSnapshot = null;
   const lastSend = new Map();
+  let lastStatusAt = 0;
   const publish = async () => {
-    if (!enabled || publishing) return;
+    if (publishing) return;
     publishing = true;
     try {
+      if (Date.now() - lastStatusAt > 5000) { enabled = (await backend.companionStatus()).enabled; lastStatusAt = Date.now(); }
+      if (!enabled) return;
       for (const message of queue?.messages ?? []) {
         if (message.status !== 'queued' || delivering.has(message.chatId)) continue;
         const pane = panes.get(message.chatId), view = pane?.view;
@@ -59,7 +62,7 @@ export function startCompanion({ state, panes, getUsage, openChat, showDialog, e
         name: 'AI Workbench',
         projects: state.projects.map(({ id, name }) => ({ id, name })),
         chats: state.chats.filter(c => c.tool !== 'shell').map(c => ({ id: c.id, projectId: c.projectId, name: c.title, tool: c.tool,
-          status: panes.get(c.id)?.view.agent?.state ?? 'closed',
+          status: panes.get(c.id)?.view.status === 'running' ? panes.get(c.id).view.agent.state : (panes.get(c.id)?.view.status ?? 'closed'),
           output: panes.get(c.id)?.view.transcript()?.slice(-8000) ?? '' })),
         usage: getUsage() ?? null,
         receipts: (queue?.messages ?? []).map(({ text, ...m }) => m),
@@ -90,9 +93,72 @@ export function startCompanion({ state, panes, getUsage, openChat, showDialog, e
       ${enabled ? '<label>This PC’s IP address or hostname<input name="companion-host" placeholder="192.168.1.20" autocomplete="off"></label><button type="button" data-pairing>Create pairing code</button><textarea data-code rows="4" readonly hidden aria-label="Pairing code"></textarea><p class="dialog-note">Paste the complete code into the phone or another Workbench. It expires after five minutes and can be used once.</p>' : ''}
       ${status.clients.map(c => `<p>${escape(c.name)} <button type="button" data-revoke="${escape(c.id)}">Revoke access</button></p>`).join('')}
       <button type="button" data-clear>Clear delivered message receipts</button></fieldset>
+      <fieldset><legend>Remote access from anywhere</legend>
+      <p class="dialog-note">Built-in Tailscale connects only Workbench traffic. Sign each PC and the phone into the same personal account. Separate Workbench pairing is still required. Remote access reconnects when Workbench restarts.</p>
+      <label>Device name<input name="mesh-name" value="${escape(localStorage.getItem('ai-workbench.mesh-name') ?? `workbench-pc-${crypto.randomUUID().slice(0,8)}`)}" maxlength="63"></label>
+      <p data-mesh-state role="status">Checking remote connection…</p>
+      <button type="button" data-mesh-enable>Enable built-in remote access</button>
+      <button type="button" data-mesh-login hidden>Sign in to Tailscale</button>
+      <button type="button" data-mesh-logout hidden>Sign out</button>
+      <button type="button" data-mesh-pair hidden>Create remote pairing code</button>
+      <textarea data-mesh-code rows="4" readonly hidden aria-label="Remote pairing code"></textarea>
+      <p data-mesh-peers class="dialog-note"></p>
+      </fieldset>
       <fieldset><legend>Other computers</legend><label>Pairing code<textarea name="remote-code" rows="3" placeholder="Paste a code from the other PC"></textarea></label><label>Computer name<input name="remote-name" placeholder="Office PC"></label><button type="button" data-connect>Pair computer</button><div data-remotes></div></fieldset>
       <p data-error class="form-error" role="status"></p><div class="dialog-actions"><button type="button" data-dismiss>close</button></div>`);
     const error = e => { box.querySelector('[data-error]').textContent = e?.message ?? String(e); };
+    let mesh = { enabled: false }, checkingMesh = false;
+    const updateMesh = async () => {
+      if (!box.open || checkingMesh) return; checkingMesh = true;
+      try {
+        mesh = await backend.meshStatus(); if (!box.open) return;
+        box.querySelector('[data-mesh-state]').textContent = mesh.enabled ? `${mesh.state ?? 'Starting'}${mesh.host ? ` · ${mesh.host}` : ''}` : 'Built-in remote access is off.';
+        box.querySelector('[data-mesh-enable]').textContent = mesh.enabled ? 'Disable built-in remote access' : 'Enable built-in remote access';
+        box.querySelector('[name="mesh-name"]').disabled = !!mesh.enabled;
+        box.querySelector('[data-mesh-login]').hidden = !mesh.enabled || mesh.state === 'Running';
+        box.querySelector('[data-mesh-logout]').hidden = !mesh.enabled || mesh.state !== 'Running';
+        box.querySelector('[data-mesh-pair]').hidden = !mesh.enabled || mesh.state !== 'Running' || !enabled;
+        box.querySelector('[data-mesh-peers]').textContent = (mesh.peers ?? []).map(p => `${p.name}: ${p.online ? 'online' : 'offline'}`).join(' · ');
+      } catch (e) { if (box.open) box.querySelector('[data-mesh-state]').textContent = e.message; }
+      finally { checkingMesh = false; }
+    };
+    updateMesh();
+    const meshTimer = setInterval(updateMesh, 2000); box.addEventListener('close', () => clearInterval(meshTimer));
+    box.querySelector('[data-mesh-enable]').onclick = async () => {
+      const button = box.querySelector('[data-mesh-enable]'); button.disabled = true;
+      try {
+        if (mesh.enabled) await backend.meshAction('disable');
+        else {
+          if (!enabled) { await backend.companionEnable(Number(box.querySelector('[name="companion-port"]').value)); enabled = true; }
+          const status = await backend.companionStatus();
+          const name = box.querySelector('[name="mesh-name"]').value.trim();
+          await backend.meshEnable(name, status.port ?? 0); localStorage.setItem('ai-workbench.mesh-name', name);
+        }
+        box.close(); dialog();
+      } catch (e) { error(e); } finally { button.disabled = false; }
+    };
+    box.querySelector('[data-mesh-login]').onclick = async () => {
+      const button = box.querySelector('[data-mesh-login]'); button.disabled = true;
+      try {
+        if (!mesh.authUrl) {
+          await backend.meshAction('login');
+          for (let attempt = 0; attempt < 20 && box.open; attempt++) {
+            mesh = await backend.meshStatus();
+            if (mesh.authUrl) break;
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        }
+        if (!box.open) return;
+        if (!mesh.authUrl) throw new Error('Sign-in link is not ready. Check your internet connection and try again.');
+        const url = new URL(mesh.authUrl);
+        if (url.protocol !== 'https:' || url.hostname !== 'login.tailscale.com') throw new Error('Unexpected remote sign-in URL.');
+        await backend.openLink(url.href);
+      } catch (e) { error(e); }
+      finally { button.disabled = false; }
+    };
+    box.querySelector('[data-mesh-logout]').onclick = async () => { try { await backend.meshAction('logout'); await updateMesh(); } catch (e) { error(e); } };
+    box.querySelector('[data-mesh-pair]').onclick = async () => { try { const field = box.querySelector('[data-mesh-code]'); field.value = JSON.stringify(await backend.meshPairing()); field.hidden = false; field.select(); } catch (e) { error(e); } };
+
     box.querySelector('[data-enable]').onclick = async () => {
       try {
         if (enabled) await backend.companionDisable();
@@ -141,7 +207,7 @@ export function startCompanion({ state, panes, getUsage, openChat, showDialog, e
         revision = result.revision; snapshot = result.snapshot;
         box.querySelector('[data-state]').textContent = `Connected · ${snapshot.updatedAt ?? 'waiting for snapshot'}`;
         const select = box.querySelector('[name="remote-chat"]'), selected = select.value;
-        select.innerHTML = (snapshot.chats ?? []).map(c => `<option value="${escape(c.id)}">${escape(c.name)} · ${escape(c.tool)} · ${escape(c.status)}</option>`).join('');
+        select.innerHTML = (snapshot.chats ?? []).map(c => `<option value="${escape(c.id)}">${escape(snapshot.projects?.find(p => p.id === c.projectId)?.name ?? "Individual chats")} / ${escape(c.name)} · ${escape(c.tool)} · ${escape(c.status)}</option>`).join('');
         if ([...select.options].some(o => o.value === selected)) select.value = selected;
         box.querySelector('[data-chats]').textContent = `${snapshot.projects?.length ?? 0} projects · ${snapshot.chats?.length ?? 0} AI chats`;
         box.querySelector('[data-usage]').innerHTML = (snapshot.usage?.tools ?? []).map(t => `<p>${escape(t.id)}: ${(t.limits ?? []).map(l => `${escape(l.label)} ${Math.round(l.usedPercent)}% used`).join(' · ') || 'No allowance reported'}</p>`).join('');

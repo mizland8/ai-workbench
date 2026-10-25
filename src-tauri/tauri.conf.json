@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AI Workbench",
-  "version": "0.2.15",
+  "version": "0.2.16",
   "identifier": "io.github.mizland8.ai-workbench",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -39,8 +39,11 @@
     "shortDescription": "Run AI coding agents side by side in your project folders",
     "longDescription": "AI Workbench runs Claude Code, Codex, Antigravity CLI and OpenCode in terminal panes, one folder per project, and picks each conversation up where it left off.",
     "publisher": "AI Workbench contributors",
-    "copyright": "Copyright © 2026 AI Workbench contributors",
-    "license": "MIT"
+    "copyright": "Copyright \u00a9 2026 AI Workbench contributors",
+    "license": "MIT",
+    "resources": {
+      "../network/netcore/notices.txt": "third-party-notices.txt"
+    }
   },
   "plugins": {
     "updater": {

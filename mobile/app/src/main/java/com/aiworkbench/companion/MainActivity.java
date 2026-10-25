@@ -102,7 +102,7 @@ public class MainActivity extends Activity {
     }
     private TextView action(LinearLayout parent,String label,boolean primary,Runnable click){
         TextView b=text(label,14,primary?BG:GREEN,true);b.setGravity(Gravity.CENTER);
-        b.setPadding(dp(14),dp(14),dp(14),dp(14));b.setBackground(shape(primary?GREEN:CARD,primary?0:LINE,12));
+        b.setMinHeight(dp(48));b.setPadding(dp(14),dp(14),dp(14),dp(14));b.setBackground(shape(primary?GREEN:CARD,primary?0:LINE,12));
         LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.topMargin=dp(12);parent.addView(b,lp);
         b.setOnClickListener(v->click.run());return b;
     }
@@ -162,17 +162,20 @@ public class MainActivity extends Activity {
     }
     private void computers(){
         heading("Your fleet","Computers","Pair each PC using its Computers & phone menu in AI Workbench.");
+        LinearLayout remote=card();remote.addView(text("Remote access from anywhere",21,INK,true));space(remote,8);
+        remote.addView(text(RemoteNetwork.enabled(this)?"Built-in networking enabled. Sign into the same Tailscale account as your PCs.":"Connect over mobile data or other Wi-Fi without a separate VPN app.",14,MUTED,false));
+        action(remote,"Remote connection settings",true,()->remoteSettings());
         for(int i=0;i<pcs.length();i++){
             JSONObject pc=pcs.optJSONObject(i);LinearLayout c=card();c.addView(text("▣  "+pc.optString("name"),21,INK,true));space(c,8);
             c.addView(text("○  "+connection(pc.optString("id")),13,MUTED,true));space(c,8);
             c.addView(text(pc.optString("note").isEmpty()?"Add a note to identify this computer.":pc.optString("note"),14,MUTED,false));
             action(c,"Edit computer",false,()->editPc(pc));
             if(!links.linked(pc.optString("id")))action(c,"Link computer",true,()->pairPc(pc));
-            else{action(c,"Browse chats",true,()->{selectedPc=pc.optString("id");selectedProject=null;tab="Chats";draftFilter=false;render();});
+            else{action(c,"Update pairing code",false,()->pairPc(pc));action(c,"Browse chats",true,()->{selectedPc=pc.optString("id");selectedProject=null;tab="Chats";draftFilter=false;render();});
                 action(c,"Unlink on this phone",false,()->new AlertDialog.Builder(this).setTitle("Unlink computer?").setMessage("Also revoke this phone in the PC’s Computers menu if you want to invalidate its credential.").setNegativeButton("Cancel",null).setPositiveButton("Unlink",(a,w)->{String id=pc.optString("id");links.forget(id);snapshots.remove(id);connectionStates.remove(id);startWatches();render();}).show());}
         }
         action(content,"+ Add computer",true,()->editPc(null));
-        section("Connection");content.addView(text("Keep Workbench open on each PC. Use the same Wi-Fi or a private network. Pairing codes expire after five minutes. Each PC can revoke this phone independently.",14,MUTED,false));
+        section("Connection");content.addView(text("For remote access, enable the built-in connection here and on each PC, sign into the same Tailscale account, and use the PC’s remote pairing code. LAN pairing still works on the same Wi-Fi. Keep Workbench open and the PCs awake.",14,MUTED,false));
     }
     private void projects(){
         heading("Across your computers","Projects","Projects from your linked computers.");
@@ -267,7 +270,7 @@ public class MainActivity extends Activity {
         }));dialog.show();
     }
     private void pairPc(JSONObject pc){
-        LinearLayout box=dialogBox();box.addView(text("On the PC: Computers → Enable linking → enter its IP address → Create pairing code. Paste the complete code below.",14,MUTED,false));
+        LinearLayout box=dialogBox();box.addView(text("On the PC: Computers → Enable built-in remote access → sign in → Create remote pairing code. Sign in on this phone too, then paste the complete code below. LAN pairing codes also work on the same network.",14,MUTED,false));
         EditText code=input(box,"Pairing code","",true);code.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE|InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Link "+pc.optString("name")).setView(box).setNegativeButton("Cancel",null).setPositiveButton("Pair",null).create();
         dialogs++;dialog.setOnDismissListener(d->dialogs--);
@@ -305,5 +308,56 @@ public class MainActivity extends Activity {
         });
         action(content,"Back to chats",false,()->{selectedChat=null;render();});
     }
-    private void about(){new AlertDialog.Builder(this).setTitle("Workbench Companion 0.2.0").setMessage("Pair with AI Workbench to view projects, chats, and available usage, and send queued messages. Connections use HTTPS pinned to the PC certificate. Pairing credentials are encrypted with Android Keystore.\n\nKeep the PC awake and Workbench open. Local drafts never send automatically. Usage depends on what each AI reports.").setPositiveButton("Got it",null).show();}
+    private void remoteSettings(){
+        LinearLayout box=dialogBox();box.addView(text("Uses Tailscale’s free personal account for your own devices. Workbench pairing still controls access to projects and chats. Only this app’s traffic uses the connection.",14,MUTED,false));space(box,12);
+        TextView status=text("Checking connection…",14,GREEN,false);box.addView(status);
+        TextView toggle=action(box,RemoteNetwork.enabled(this)?"Disable built-in remote access":"Enable built-in remote access",true,()->{});
+        TextView login=action(box,"Sign in to Tailscale",false,()->{});
+        TextView logout=action(box,"Sign out",false,()->{});
+        TextView peers=text("",13,MUTED,false);space(box,12);box.addView(peers);
+        ScrollView settingsScroll=new ScrollView(this);settingsScroll.addView(box);
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Remote connection").setView(settingsScroll).setPositiveButton("Done",null).create();
+        dialogs++;final boolean[] open={true};final boolean[] checking={false};final JSONObject[] last={null};
+        Runnable refresh=()->{
+            if(!open[0]||checking[0])return;checking[0]=true;
+            network.execute(()->{try{JSONObject info=RemoteNetwork.status(this);runOnUiThread(()->{if(!open[0])return;last[0]=info;
+                status.setText(info.optBoolean("enabled")?info.optString("state","Starting")+(info.optString("host").isEmpty()?"":" · "+info.optString("host")):"Built-in remote access is off.");
+                toggle.setText(info.optBoolean("enabled")?"Disable built-in remote access":"Enable built-in remote access");
+                login.setVisibility(info.optBoolean("enabled")&&!"Running".equals(info.optString("state"))?View.VISIBLE:View.GONE);
+                logout.setVisibility("Running".equals(info.optString("state"))?View.VISIBLE:View.GONE);
+                JSONArray devices=info.optJSONArray("peers");StringBuilder names=new StringBuilder();if(devices!=null)for(int i=0;i<devices.length();i++){JSONObject device=devices.optJSONObject(i);names.append(device.optString("name")).append(device.optBoolean("online")?" · online":" · offline").append("\n");}peers.setText(names.toString());
+            });}catch(Exception e){runOnUiThread(()->{if(open[0])status.setText(e.getMessage());});}finally{runOnUiThread(()->checking[0]=false);}});
+        };
+        toggle.setOnClickListener(v->{toggle.setEnabled(false);network.execute(()->{try{if(RemoteNetwork.enabled(this))RemoteNetwork.disable(this);else RemoteNetwork.enable(this);runOnUiThread(()->{toggle.setEnabled(true);startWatches();refresh.run();});}catch(Exception e){runOnUiThread(()->{status.setText(e.getMessage());toggle.setEnabled(true);});}});});
+        login.setOnClickListener(v->{
+            login.setEnabled(false);status.setText("Preparing secure sign-in…");
+            network.execute(()->{
+                try{
+                    JSONObject info=RemoteNetwork.status(this);
+                    if("Running".equals(info.optString("state"))){runOnUiThread(()->{status.setText("Already connected");login.setEnabled(true);refresh.run();});return;}
+                    String auth=info.optString("authUrl");
+                    if(auth.isEmpty()){
+                        RemoteNetwork.login(this);
+                        for(int attempt=0;attempt<20;attempt++){
+                            if(!open[0])return;
+                            info=RemoteNetwork.status(this);auth=info.optString("authUrl");if(!auth.isEmpty())break;Thread.sleep(500);
+                        }
+                    }
+                    if(auth.isEmpty())throw new Exception("Sign-in link is not ready. Check your internet connection and try again.");
+                    android.net.Uri uri=android.net.Uri.parse(auth);
+                    if(!"https".equals(uri.getScheme())||!"login.tailscale.com".equals(uri.getHost()))throw new Exception("Unexpected sign-in address");
+                    runOnUiThread(()->{
+                        if(!open[0])return;
+                        try{startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,uri));status.setText("Finish sign-in in your browser, then return to Workbench.");}
+                        catch(Exception e){status.setText("Could not open the browser: "+e.getMessage());}
+                        finally{login.setEnabled(true);}
+                    });
+                }catch(Exception e){runOnUiThread(()->{if(open[0]){status.setText(e.getMessage());login.setEnabled(true);}});}
+            });
+        });
+        logout.setOnClickListener(v->network.execute(()->{try{RemoteNetwork.logout(this);runOnUiThread(refresh);}catch(Exception e){runOnUiThread(()->status.setText(e.getMessage()));}}));
+        android.os.Handler handler=new android.os.Handler(android.os.Looper.getMainLooper());Runnable timer=new Runnable(){public void run(){if(open[0]){refresh.run();handler.postDelayed(this,2000);}}};
+        dialog.setOnDismissListener(d->{open[0]=false;handler.removeCallbacks(timer);dialogs--;startWatches();render();});dialog.show();timer.run();
+    }
+    private void about(){new AlertDialog.Builder(this).setTitle("Workbench Companion 0.3.0").setMessage("Pair with AI Workbench to view projects, chats, and available usage, and send queued messages. Connections use HTTPS pinned to the PC certificate. Pairing credentials are encrypted with Android Keystore.\n\nKeep the PC awake and Workbench open. Local drafts never send automatically. Usage depends on what each AI reports.").setPositiveButton("Got it",null).show();}
 }

@@ -181,3 +181,14 @@ A `queued` receipt means the message is saved on the PC. `delivered` means it wa
 For uninterrupted AI access, choose **Settings → Enable full access for all AIs on this PC**, then restart/resume existing chats from their Session permissions menu. This configures Claude, Codex, Antigravity, OpenCode, and local-model chats using your account’s access. It removes conflicting extra permission switches while keeping model options. It does not grant administrator privileges or override macOS privacy controls or organization policies. Selected permission flags that the installed CLI does not support now produce an actionable startup error instead of silently falling back.
 
 Android source is in `mobile/`. GitHub CI builds and lints it; preview APKs are signed locally and attached to releases. The signing key is not stored in this repository or exported to GitHub.
+
+
+### Built-in remote access (0.2.16)
+
+Workbench now embeds an app-scoped Tailscale node. In **Computers → Enable built-in remote access**, choose a device name and sign into your own Tailscale account. Do the same in the companion under **Computers → Remote connection settings**. No separately installed Tailscale client or system-wide VPN is required for these app connections. The Personal plan is intended for your own devices; account eligibility and plan terms are controlled by Tailscale.
+
+Create a **remote pairing code** on each host PC and paste it into the phone or another Workbench. Remote codes select the embedded connection automatically and retain Workbench's certificate pinning and independently revocable credentials. Existing LAN codes continue to work over the LAN; update the pairing code to switch an existing phone computer entry to the embedded transport. Signing into the same network does not by itself grant access to projects or terminals.
+
+Once opted in, a PC restores its remote node and enabled companion listener when Workbench starts. Disabling the listener is preserved separately. Workbench must still be open and the PC awake. Independently opened terminals are not attached automatically. Mobile synchronization runs in the foreground, not as a persistent background notification service.
+
+Building from source now requires Go 1.27.3 as well as the existing Rust/Node tools. Cargo embeds the native helper into the desktop binary, including the plain Linux executable, so installed users do not need Go. Build the phone's native library with `bash scripts/build-android-network.sh` before Gradle; it requires JDK 17 and Android NDK 28.2.13676358. The networking module and mobile bindings are pinned in `network/go.mod` and `network/go.sum`. Third-party notices are distributed with both apps.

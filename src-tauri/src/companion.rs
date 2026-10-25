@@ -181,6 +181,7 @@ pub fn companion_enable(
     app: tauri::AppHandle,
     companion: State<'_, Companion>,
     port: u16,
+    mesh: State<'_, crate::mesh::Mesh>,
 ) -> Result<Value, String> {
     if port == 0 {
         return Err("Choose a port between 1 and 65535".into());
@@ -234,14 +235,21 @@ pub fn companion_enable(
         }
     });
     *runtime = Some(Runtime { stop, thread, port });
+    if let Err(error) = mesh.forward(port) { drop(runtime); companion.stop(); return Err(error); }
+    crate::mesh::set_host_port(&app,port);
     Ok(json!({"enabled":true,"port":port}))
 }
 #[tauri::command]
-pub fn companion_disable(companion: State<'_, Companion>) {
+pub fn companion_disable(app: tauri::AppHandle, companion: State<'_, Companion>, mesh: State<'_, crate::mesh::Mesh>) {
+    let _ = mesh.forward(0);
+    crate::mesh::set_host_port(&app,0);
     companion.stop();
 }
 #[tauri::command]
 pub fn companion_pairing(companion: State<'_, Companion>, host: String) -> Result<Value, String> {
+    pairing(&companion, &host)
+}
+pub(crate) fn pairing(companion: &Companion, host: &str) -> Result<Value, String> {
     if !companion.inner.enabled.load(Ordering::SeqCst) {
         return Err("Enable linking first".into());
     }
@@ -515,6 +523,8 @@ struct Remote {
     port: u16,
     cert: String,
     token: String,
+    #[serde(default)]
+    transport: String,
 }
 fn remote_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(app
@@ -584,6 +594,13 @@ fn remote_request(remote: &Remote, method: &str, body: Value) -> Result<Value, S
     }
     Ok(value)
 }
+fn peer_request(app: &tauri::AppHandle, remote: &Remote, method: &str, body: Value) -> Result<Value,String> {
+    match remote.transport.as_str() {
+        "mesh" => app.state::<crate::mesh::Mesh>().request("request", json!({"host":remote.host,"port":remote.port,"cert":remote.cert,"token":remote.token,"endpoint":method,"body": if method.starts_with("snapshot") { Value::Null } else { body }})),
+        "" | "lan" => remote_request(remote,method,body),
+        _ => Err("Unknown connection transport".into())
+    }
+}
 #[tauri::command]
 pub async fn companion_remote(
     app: tauri::AppHandle,
@@ -614,9 +631,10 @@ pub async fn companion_remote(
                         .ok_or("Invalid port")? as u16,
                     cert: body["cert"].as_str().ok_or("Missing certificate")?.into(),
                     token: String::new(),
+                    transport: body["transport"].as_str().unwrap_or("lan").into(),
                 };
-                let result = remote_request(
-                    &r,
+                let result = peer_request(
+                    &app, &r,
                     "pair",
                     json!({"code":body["code"],"name":"Workbench desktop"}),
                 )?;
@@ -644,7 +662,7 @@ pub async fn companion_remote(
                 } else {
                     method
                 };
-                remote_request(remote, &path, body)
+                peer_request(&app, remote, &path, body)
             }
             _ => Err("Unknown remote command".into()),
         }
@@ -727,6 +745,7 @@ mod tests {
             port,
             cert: hex(&cert),
             token: String::new(),
+            transport: "lan".into(),
         };
         assert!(remote_request(&remote, "snapshot", Value::Null).is_err());
         let pairing = remote_request(

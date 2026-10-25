@@ -5,3 +5,7 @@ local.properties
 *.jks
 *.keystore
 artifacts/
+
+app/libs/*.aar
+app/libs/*-sources.jar
+app/src/main/assets/network-notices.txt

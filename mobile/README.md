@@ -1,15 +1,21 @@
 # Workbench Companion for Android
 
-Native Android companion for AI Workbench. Version 0.2.0 requires desktop Workbench 0.2.15 or later.
+Native Android companion for AI Workbench. Version 0.3.0 adds built-in remote access and requires desktop Workbench 0.2.16 or later for that mode. LAN mode remains compatible with 0.2.15.
 
-## Connect a PC
+## Built-in remote access
+
+On each PC, open Computers, enable built-in remote access, choose a device name, and sign into your personal Tailscale account. On the phone, open Computers → Remote connection settings, enable the connection and sign into the same account. No separate VPN app is required. Create a remote pairing code on the PC and paste the whole code into Link computer or Update pairing code on the phone. Pairing remains necessary even when both devices are signed into the same account.
+
+The desktop restores opted-in remote access when Workbench starts. Keep it open and the PC awake. The phone's embedded networking runs in the app process. Keys stay in the app's private files, and Workbench pairing credentials remain encrypted with Android Keystore. No root access is required; Android interface enumeration uses the app-compatible native implementation instead of netlink.
+
+## Connect a PC over the LAN
 
 1. On the PC, open Workbench → Computers → Enable linking. The default TLS port is 47931.
 2. Enter that PC's local IPv4 address or private-network hostname and choose Create pairing code.
 3. On the phone, open Computers, edit the PC's name, choose Link computer, and paste the complete code.
 4. Repeat for the other PCs. Keep Workbench open and the PCs awake.
 
-Use the same Wi-Fi or a private network such as Tailscale. OS firewalls may need an incoming TCP allowance for the selected port. Pairing codes are single-use and expire after five minutes. The phone pins the exact PC certificate and encrypts its credentials with Android Keystore. Revoke a phone independently from the PC's Computers menu. Linking is off after restarting the desktop until explicitly enabled again.
+Use the same Wi-Fi or a private network such as Tailscale. OS firewalls may need an incoming TCP allowance for the selected port. Pairing codes are single-use and expire after five minutes. The phone pins the exact PC certificate and encrypts its credentials with Android Keystore. Revoke a phone independently from the PC's Computers menu. Opted-in built-in remote access reconnects when Workbench starts; LAN-only linking is not independently auto-started.
 
 ## Features
 
@@ -26,7 +32,7 @@ A delivery receipt means the prompt was submitted, not that the AI completed its
 
 Requires JDK 17, Android SDK platform 35, build tools 35.0.0, and the checked-in Gradle 8.11.1 wrapper. Android Gradle Plugin is 8.9.2.
 
-Set `JAVA_HOME` and `ANDROID_HOME`, or add an ignored `local.properties` containing `sdk.dir=/absolute/path/to/sdk`.
+First build the native networking dependency from the repository root with `bash scripts/build-android-network.sh`. This requires Go 1.27.3 and Android NDK 28.2.13676358, and produces the ignored AAR and notice asset. Then set `JAVA_HOME` and `ANDROID_HOME`, or add an ignored `local.properties` containing `sdk.dir=/absolute/path/to/sdk`.
 
 ```
 ./gradlew assembleDebug lintDebug

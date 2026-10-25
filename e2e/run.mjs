@@ -682,6 +682,21 @@ try {
   check('retrying a delivered remote message returns its receipt', repeated.status === 'delivered');
   check('remote snapshots expose projects, chats and receipts', await q(`!!__AIW_TEST__.companionSnapshot?.chats?.length && __AIW_TEST__.companionSnapshot.receipts.some(m => m.id === '${remoteId}')`));
 
+  await click('.app-header [data-action=computers]'); await wait(150);
+  await page.eval(`document.querySelector('[name="mesh-name"]').value = 'workbench-test-pc'`);
+  await click('dialog [data-mesh-enable]'); await wait(250);
+  check('built-in remote access has an explicit enrollment state', await q(`document.querySelector('[data-mesh-state]').textContent.includes('NeedsLogin')`));
+  await click('dialog [data-mesh-login]'); await wait(150);
+  check('one tap opens the approved Tailscale sign-in URL', (await calls('plugin:opener|open_url')).some(call => call.url === 'https://login.tailscale.com/a/test-login'));
+  check('remote pairing waits for sign-in', await q(`document.querySelector('[data-mesh-pair]').hidden`));
+  await page.eval(`__AIW_TEST__.mesh = { enabled: true, state: 'Running', host: 'workbench-test-pc.example.ts.net', peers: [{name:'workbench-phone',online:true}] }`);
+  await wait(2300); await click('dialog [data-mesh-pair]'); await wait(100);
+  check('remote pairing codes select the embedded transport', await q(`JSON.parse(document.querySelector('[data-mesh-code]').value).transport === 'mesh'`));
+  check('discovered Workbench nodes are visible', await q(`document.querySelector('[data-mesh-peers]').textContent.includes('workbench-phone: online')`));
+  await click('dialog [data-mesh-enable]'); await wait(200);
+  check('remote networking can be disabled independently', await q(`!__AIW_TEST__.mesh.enabled`));
+  await click('dialog [data-dismiss]');
+
 
 } catch (error) {
   check('test run completed', false, String(error.stack ?? error));

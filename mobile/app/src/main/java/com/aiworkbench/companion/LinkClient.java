@@ -25,6 +25,8 @@ final class LinkClient {
     }
     @android.annotation.SuppressLint("CustomX509TrustManager") // Exact leaf certificate pinning replaces public-CA trust for paired PCs.
     JSONObject request(JSONObject pc,String endpoint,JSONObject body)throws Exception{
+        if("mesh".equals(pc.optString("transport")))return RemoteNetwork.request(context,pc,endpoint,body);
+        if(pc.has("transport")&&!pc.optString("transport").equals("lan"))throw new IOException("Unknown connection transport");
         String host=pc.getString("host");int port=pc.getInt("port");
         if(!host.matches("[a-zA-Z0-9.-]+")||port<1||port>65535)throw new IOException("Invalid computer address");
         byte[] expected=unhex(pc.getString("cert"));
