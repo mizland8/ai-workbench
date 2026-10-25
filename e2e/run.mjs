@@ -695,6 +695,26 @@ try {
   check('retrying a delivered remote message returns its receipt', repeated.status === 'delivered');
   check('remote snapshots expose projects, chats and receipts', await q(`!!__AIW_TEST__.companionSnapshot?.chats?.length && __AIW_TEST__.companionSnapshot.receipts.some(m => m.id === '${remoteId}')`));
 
+  await show('codex', 'Folder access\nTrust this folder?\n1. Trust and continue\n› 2. Quit\n\nenter continue · esc quit'); await wait(2400);
+  const firstPrompt=await q(`__AIW_TEST__.companionSnapshot.chats.find(c=>c.id==='${lead}').replyPrompt`);
+  check('a live approval is exposed as a prompt requiring the paired user to reply', !!firstPrompt?.id);
+  const heldWork={id:'approval-held-work',chatId:lead,text:'1'};
+  await page.eval(`return await __AIW_TEST__.companion(${JSON.stringify(heldWork)});`);await wait(2200);
+  check('ordinary work cannot answer a permission prompt', (await calls('terminal_submit_reply')).length===0 && await q(`JSON.parse(localStorage.getItem('ai-workbench.remote-messages.v1')).find(m=>m.id==='approval-held-work').status==='queued'`));
+  check('queued work explains the blocked permission prompt', await q(`__AIW_TEST__.companionSnapshot.receipts.find(r=>r.id==='approval-held-work').reason.includes('approval')`));
+  await show('codex','Approval required\nWould you like to run the following command?\n› 1. Yes\n2. No');await wait(2400);
+  const stale={id:'reply-stale-1234',chatId:lead,text:'1',kind:'reply',promptId:firstPrompt?.id};
+  const staleResult=await page.eval(`return await __AIW_TEST__.companion(${JSON.stringify(stale)});`);
+  check('a reply to a previous question is rejected without terminal input',staleResult.status==='rejected' && (await calls('terminal_submit_reply')).length===0);
+  const currentPrompt=await q(`__AIW_TEST__.companionSnapshot.chats.find(c=>c.id==='${lead}').replyPrompt`);
+  const reply={id:'reply-current-1234',chatId:lead,text:'1',kind:'reply',promptId:currentPrompt?.id};
+  const replyResult=await page.eval(`return await __AIW_TEST__.companion(${JSON.stringify(reply)});`);
+  check('an explicit user reply sends the exact choice without an AI-message prefix',replyResult.status==='delivered' && (await calls('terminal_submit_reply')).at(-1)?.text==='1');
+  await page.eval(`return await __AIW_TEST__.companion(${JSON.stringify(reply)});`);
+  check('retrying an acknowledged reply never submits it twice',(await calls('terminal_submit_reply')).length===1);
+  const cancelled=await page.eval(`return await __AIW_TEST__.companion({kind:'cancel',chatId:'${lead}'});`);
+  check('the user can discard queued work rather than sending it after an approval',cancelled.count===1 && await q(`JSON.parse(localStorage.getItem('ai-workbench.remote-messages.v1')).find(m=>m.id==='approval-held-work').status==='cancelled'`));
+
   await click('.app-header [data-action=computers]'); await wait(150);
   await page.eval(`document.querySelector('[name="mesh-name"]').value = 'workbench-test-pc'`);
   await click('dialog [data-mesh-enable]'); await wait(250);

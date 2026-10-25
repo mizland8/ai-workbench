@@ -543,6 +543,25 @@ pub async fn terminal_submit_prompt(terminals: State<'_, Terminals>, id: u32, pr
     tauri::async_runtime::spawn_blocking(move || submit_prompt_to(&terminal, &prompt)).await.map_err(|e| e.to_string())?
 }
 
+// A paired user's explicit reply, sent as keystrokes rather than an AI work prompt.
+#[tauri::command]
+pub async fn terminal_submit_reply(terminals: State<'_, Terminals>, id: u32, text: String) -> Result<(), String> {
+    let terminal = terminals.get(id).ok_or("This session has ended.")?;
+    tauri::async_runtime::spawn_blocking(move || submit_reply_to(&terminal, &text)).await.map_err(|e| e.to_string())?
+}
+fn submit_reply_to(terminal: &Terminal, text: &str) -> Result<(), String> {
+    if text.trim().is_empty() || text.chars().count() > 1000 || text.chars().any(char::is_control) { return Err("Reply must be one line without control characters (maximum 1000 characters).".into()); }
+    if terminal.exited.load(Ordering::SeqCst) { return Err("This session has ended.".into()); }
+    if terminal.pending_prompt.swap(true, Ordering::SeqCst) { return Err("Another prompt delivery is in progress".into()); }
+    let result = (|| {
+        let (reply, delivered) = mpsc::channel();
+        terminal.input.send(TerminalInput::Submit(format!("{text}\r").into_bytes(), reply)).map_err(|_| "Target exited before reply".to_string())?;
+        delivered.recv_timeout(Duration::from_secs(5)).map_err(|_| "Reply confirmation unavailable; inspect the terminal before retrying".to_string())?
+    })();
+    terminal.pending_prompt.store(false, Ordering::SeqCst);
+    result
+}
+
 const PASTE_SETTLE: Duration = Duration::from_millis(400);
 
 fn submit_prompt_to(terminal: &Terminal, prompt: &str) -> Result<(), String> {
@@ -808,7 +827,7 @@ mod real_cli_tests {
         let project = std::env::temp_dir().join(format!("workbench-dispatch-{}", uuid()));
         std::fs::create_dir_all(&project).unwrap();
         let program = project.join("test-cli");
-        std::fs::write(&program, "#!/bin/sh\nprintf 'READY\\n'\nwhile IFS= read -r line; do printf 'COMMITTED\\n'; done\n").unwrap();
+        std::fs::write(&program, "#!/bin/sh\nprintf 'READY\\n'\nwhile IFS= read -r line; do printf 'COMMITTED:%s\\n' \"$line\"; done\n").unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         let terminals = Terminals::default();
         let mut req = chat(Tool::Claude, Some(uuid()), &project);
@@ -826,6 +845,11 @@ mod real_cli_tests {
         collect(&rx, &mut out, |text| text.contains("COMMITTED"), Duration::from_secs(3));
         assert!(screen_text(&out).contains("harmless probe") && screen_text(&out).contains("COMMITTED"));
         assert!(!terminal.pending_prompt.load(Ordering::SeqCst), "the next delivery may follow");
+        assert!(submit_reply_to(&terminal, "1\n2").is_err());
+        assert!(submit_reply_to(&terminal, "\x1b[A").is_err());
+        submit_reply_to(&terminal, "1").unwrap();
+        collect(&rx, &mut out, |text| text.contains("COMMITTED:1"), Duration::from_secs(3));
+        assert!(screen_text(&out).contains("COMMITTED:1"), "a raw reply reaches the PTY as exactly one line");
         terminal.stop(true);
         std::fs::remove_dir_all(project).unwrap();
     }

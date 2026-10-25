@@ -1,6 +1,20 @@
 import * as backend from './backend.js';
 
 const KEY = 'ai-workbench.remote-messages.v1';
+// A reply is bound to one displayed question, terminal generation and local input state.
+export class ReplyPrompts {
+  constructor() { this.prompts = new Map(); }
+  current(chatId, view) {
+    const delivery = view?.deliveryState();
+    if (!view || view.status !== 'running' || view.submitting || !['approval_pending', 'user_input_required'].includes(delivery.state)) { this.prompts.delete(chatId); return null; }
+    const signature = JSON.stringify([view.id, view.generation, view.lastInputAt, view.screenLines()]);
+    let prompt = this.prompts.get(chatId);
+    if (prompt?.signature !== signature) { prompt = { signature, id: crypto.randomUUID() }; this.prompts.set(chatId, prompt); }
+    return { id: prompt.id, reason: delivery.reason };
+  }
+  matches(chatId, view, id) { return !!id && this.current(chatId, view)?.id === id; }
+}
+
 export class CompanionQueue {
   constructor(storage) {
     this.storage = storage;
@@ -9,22 +23,30 @@ export class CompanionQueue {
   }
   commit(messages) { this.storage.setItem(KEY, JSON.stringify(messages)); this.messages = messages; }
   accept(state, request) {
-    const { id, chatId, text } = request ?? {};
+    const { id, chatId, text, promptId } = request ?? {};
+    const kind = request?.kind ?? 'work';
+    if (!['work','reply'].includes(kind)) throw new Error('Unknown message kind.');
+    if (kind === 'reply' && (typeof promptId !== 'string' || !/^[a-zA-Z0-9-]{8,128}$/.test(promptId) || text?.length > 1000 || /[\r\n\t]/.test(text))) throw new Error('A reply needs the current prompt ID and one line of text (maximum 1000 characters).');
     if (typeof id !== 'string' || !/^[a-zA-Z0-9-]{8,128}$/.test(id) || typeof text !== 'string' || !text.trim() || text.length > 16000) throw new Error('Invalid message ID or text (maximum 16000 characters).');
     if (/[\x00-\x08\x0b-\x1f\x7f]/.test(text)) throw new Error('Messages cannot contain terminal control characters.');
     const chat = state.chats.find(c => c.id === chatId && c.tool !== 'shell');
     if (!chat) throw new Error('That AI chat no longer exists. Refresh this computer.');
     const previous = this.messages.find(m => m.id === id);
     if (previous) {
-      if (previous.chatId !== chatId || previous.text !== text) throw new Error('This request ID belongs to a different message.');
+      if (previous.chatId !== chatId || previous.text !== text || (previous.kind ?? 'work') !== kind || previous.promptId !== promptId) throw new Error('This request ID belongs to a different message.');
       return previous;
     }
     if (this.messages.length >= 2000) throw new Error('Remote message history is full. Clear delivered receipts on the PC.');
-    const message = { id, chatId, text, status: 'queued', at: new Date().toISOString() };
+    const message = { id, chatId, text, kind, ...(kind === 'reply' ? { promptId } : {}), status: 'queued', at: new Date().toISOString() };
     this.commit([...this.messages, message]); return message;
   }
   update(id, status, error) {
     this.commit(this.messages.map(m => m.id === id ? { ...m, status, ...(error ? { error } : {}) } : m));
+  }
+  cancelQueued(chatId) {
+    let count = 0;
+    this.commit(this.messages.map(m => m.chatId === chatId && m.status === 'queued' ? (count++, { ...m, status: 'cancelled' }) : m));
+    return count;
   }
   clearDelivered() { this.commit(this.messages.filter(m => m.status !== 'delivered')); }
 }
@@ -35,7 +57,7 @@ export function startCompanion({ state, panes, getUsage, openChat, showDialog, e
   try { queue = new CompanionQueue(localStorage); }
   catch (error) { console.error(error.message); }
   let enabled = false, publishing = false, delivering = new Set(), lastSnapshot = null;
-  const lastSend = new Map();
+  const lastSend = new Map(), replyPrompts = new ReplyPrompts();
   let lastStatusAt = 0;
   const publish = async () => {
     if (publishing) return;
@@ -44,7 +66,7 @@ export function startCompanion({ state, panes, getUsage, openChat, showDialog, e
       if (Date.now() - lastStatusAt > 5000) { enabled = (await backend.companionStatus()).enabled; lastStatusAt = Date.now(); }
       if (!enabled) return;
       for (const message of queue?.messages ?? []) {
-        if (message.status !== 'queued' || delivering.has(message.chatId)) continue;
+        if (message.kind === 'reply' || message.status !== 'queued' || delivering.has(message.chatId)) continue;
         const pane = panes.get(message.chatId), view = pane?.view;
         if (!view || view.submitting || Date.now() - (lastSend.get(message.chatId) ?? 0) < 8000 || Date.now() - (view.lastInputAt ?? 0) < 8000 || view.restartProblem?.() || view.status !== 'running' || view.agent.state !== 'idle' || !view.deliveryState().canAccept) continue;
         delivering.add(message.chatId);
@@ -63,9 +85,9 @@ export function startCompanion({ state, panes, getUsage, openChat, showDialog, e
         projects: state.projects.map(({ id, name }) => ({ id, name })),
         chats: state.chats.filter(c => c.tool !== 'shell').map(c => ({ id: c.id, projectId: c.projectId, name: c.title, tool: c.tool,
           status: panes.get(c.id)?.view.status === 'running' ? panes.get(c.id).view.agent.state : (panes.get(c.id)?.view.status ?? 'closed'),
-          output: panes.get(c.id)?.view.transcript()?.slice(-8000) ?? '' })),
+          output: panes.get(c.id)?.view.transcript()?.slice(-8000) ?? '', replyPrompt: replyPrompts.current(c.id, panes.get(c.id)?.view) })),
         usage: getUsage() ?? null,
-        receipts: (queue?.messages ?? []).map(({ text, ...m }) => m),
+        receipts: (queue?.messages ?? []).map(({ text, ...m }) => ({ ...m, ...(m.status === 'queued' ? {reason: panes.get(m.chatId)?.view.restartProblem?.() ?? panes.get(m.chatId)?.view.deliveryState().reason ?? 'Waiting for this chat to be ready.'} : {}) })),
       };
       const serialized = JSON.stringify(snapshot);
       if (serialized !== lastSnapshot) { await backend.companionPublish({ ...snapshot, updatedAt: new Date().toISOString() }); lastSnapshot = serialized; }
@@ -74,7 +96,29 @@ export function startCompanion({ state, panes, getUsage, openChat, showDialog, e
   backend.companionStatus().then(status => { enabled = status.enabled; }).catch(() => {});
   backend.listenCompanion(async request => {
     if (!queue) throw new Error('Remote message storage is unavailable; no prompt was sent.');
+    if (request.message?.kind === 'cancel') {
+      const cancelled = queue.cancelQueued(request.message.chatId);
+      setTimeout(() => publish().catch(() => {}), 0);
+      return { status: 'cancelled', count: cancelled };
+    }
     const message = queue.accept(state, request.message);
+    if (message.kind === 'reply') {
+      if (message.status !== 'queued') return { id: message.id, status: message.status, error: message.error };
+      const view = panes.get(message.chatId)?.view;
+      if (!replyPrompts.matches(message.chatId, view, message.promptId)) {
+        queue.update(message.id, 'rejected', 'The prompt changed. Refresh the chat and reply to the question currently shown.');
+      } else {
+        queue.update(message.id, 'dispatching');
+        try {
+          await view.replyToPrompt(message.text, () => replyPrompts.matches(message.chatId, view, message.promptId));
+          queue.update(message.id, 'delivered');
+          lastSend.set(message.chatId, Date.now());
+        } catch (error) { queue.update(message.id, error.beforeSubmit ? 'rejected' : 'delivery_unknown', String(error?.message ?? error)); }
+      }
+      setTimeout(() => publish().catch(() => {}), 0);
+      const receipt = queue.messages.find(m => m.id === message.id);
+      return { id: receipt.id, status: receipt.status, ...(receipt.error ? {error: receipt.error} : {}) };
+    }
     if (message.status === 'queued') openChat(message.chatId);
     setTimeout(() => publish().catch(() => {}), 0);
     return { id: message.id, status: message.status };
@@ -200,21 +244,33 @@ export function startCompanion({ state, panes, getUsage, openChat, showDialog, e
     list().catch(error);
   }
   async function remoteDialog(remote) {
-    const box = showDialog(`<h2>${escape(remote.name)}</h2><p data-state>Connecting…</p><div data-chats></div><div data-usage></div><div data-receipts></div><label>Chat<select name="remote-chat"></select></label><pre data-output class="handoff-prompt"></pre><label>Message<textarea name="remote-message" rows="4"></textarea></label><button type="button" data-send>Send work</button><p data-receipt role="status"></p><div class="dialog-actions"><button type="button" data-dismiss>close</button></div>`);
+    const box = showDialog(`<h2>${escape(remote.name)}</h2><p data-state>Connecting…</p><div data-chats></div><div data-usage></div><div data-receipts></div><label>Chat<select name="remote-chat"></select></label><pre data-output class="handoff-prompt"></pre><label>Message<textarea name="remote-message" rows="4"></textarea></label><button type="button" data-send>Send work</button><button type="button" data-cancel-queued hidden>Discard queued work for this chat</button><p data-receipt role="status"></p><div class="dialog-actions"><button type="button" data-dismiss>close</button></div>`);
     let revision, snapshot, request = null;
     box.querySelector('[data-send]').onclick = async () => {
       const button = box.querySelector('[data-send]'); button.disabled = true;
       try {
         const chatId = box.querySelector('[name="remote-chat"]').value, text = box.querySelector('[name="remote-message"]').value;
-        if (!request || request.chatId !== chatId || request.text !== text) request = { id: crypto.randomUUID(), chatId, text };
+        if (!request || request.chatId !== chatId || request.text !== text) {
+          const promptId = button.dataset.promptId;
+          request = { id: crypto.randomUUID(), chatId, text, ...(promptId ? {kind:'reply', promptId} : {}) };
+        }
         const result = await backend.companionRemote('message', remote.id, request);
         box.querySelector('[data-receipt]').textContent = `Message ${result.id}: ${result.status}`;
         box.querySelector('[name="remote-message"]').value = ''; request = null;
       } catch (e) { box.querySelector('[data-receipt]').textContent = e.message; }
       finally { button.disabled = false; }
     };
+    box.querySelector('[data-cancel-queued]').onclick = async () => {
+      try { const result = await backend.companionRemote('message', remote.id, {kind:'cancel', chatId:box.querySelector('[name="remote-chat"]').value}); box.querySelector('[data-receipt]').textContent = `Cancelled ${result.count} queued messages.`; }
+      catch (e) { box.querySelector('[data-receipt]').textContent = e.message; }
+    };
     box.querySelector('[name="remote-chat"]').onchange = () => output();
-    function output() { const id = box.querySelector('[name="remote-chat"]').value; box.querySelector('[data-output]').textContent = snapshot?.chats?.find(c => c.id === id)?.output || 'No terminal output available.'; }
+    function output() {
+      const id = box.querySelector('[name="remote-chat"]').value, chat = snapshot?.chats?.find(c => c.id === id), button = box.querySelector('[data-send]');
+      box.querySelector('[data-output]').textContent = chat?.output || 'No terminal output available.';
+      button.textContent = chat?.replyPrompt ? 'Reply to current prompt' : 'Send work'; button.dataset.promptId = chat?.replyPrompt?.id ?? '';
+      box.querySelector('[data-cancel-queued]').hidden = !snapshot?.receipts?.some(r => r.chatId === id && r.status === 'queued');
+    }
     while (box.open) {
       try {
         const result = await backend.companionRemote('snapshot', remote.id, revision === undefined ? {} : { since: revision });
@@ -226,7 +282,7 @@ export function startCompanion({ state, panes, getUsage, openChat, showDialog, e
         if ([...select.options].some(o => o.value === selected)) select.value = selected;
         box.querySelector('[data-chats]').textContent = `${snapshot.projects?.length ?? 0} projects · ${snapshot.chats?.length ?? 0} AI chats`;
         box.querySelector('[data-usage]').innerHTML = (snapshot.usage?.tools ?? []).map(t => `<p>${escape(t.id)}: ${(t.limits ?? []).map(l => `${escape(l.label)} ${Math.round(l.usedPercent)}% used`).join(' · ') || 'No allowance reported'}</p>`).join('');
-        box.querySelector('[data-receipts]').textContent = (snapshot.receipts ?? []).slice(-5).map(r => `${r.id}: ${r.status}`).join(' · ');
+        box.querySelector('[data-receipts]').textContent = (snapshot.receipts ?? []).slice(-5).map(r => `${r.id}: ${r.status}${r.reason ? ' · '+r.reason : ''}`).join(' · ');
         output();
       } catch (e) { if (!box.open) break; box.querySelector('[data-state]').textContent = `Offline · ${e.message}`; await new Promise(r => setTimeout(r, 5000)); }
     }

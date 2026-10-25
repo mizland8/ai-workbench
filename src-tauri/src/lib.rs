@@ -115,6 +115,7 @@ pub fn run() {
             sessions::session_permissions,
             terminals::terminal_write,
             terminals::terminal_submit_prompt,
+            terminals::terminal_submit_reply,
             terminals::terminal_resize,
             terminals::terminal_stop,
             terminals::terminal_stop_all,

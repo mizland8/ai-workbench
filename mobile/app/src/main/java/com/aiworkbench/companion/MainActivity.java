@@ -33,7 +33,7 @@ public class MainActivity extends Activity {
     private final Map<String,String> connectionStates=new HashMap<>();
     private volatile int watchGeneration=0;
     private String selectedPc=null,selectedChat=null,selectedProject=null;
-    private TextView liveOutput,liveStatus,liveReceipt;
+    private TextView liveOutput,liveStatus,liveReceipt,liveSend,liveQueueState,discardQueued;
     private String lastMessageId;
     private EditText messageInput;
     private JSONObject retryMessage;
@@ -114,6 +114,7 @@ public class MainActivity extends Activity {
     private String pcName(String id){for(int i=0;i<pcs.length();i++)if(pcs.optJSONObject(i).optString("id").equals(id))return pcs.optJSONObject(i).optString("name");return "Removed computer";}
 
     private void render(){
+        liveOutput=null;liveStatus=null;liveReceipt=null;liveSend=null;liveQueueState=null;discardQueued=null;
         root=vertical();root.setBackgroundColor(BG);setContentView(root);
         root.setOnApplyWindowInsetsListener((v,insets)->{
             android.graphics.Insets bars=insets.getInsets(WindowInsets.Type.systemBars()|WindowInsets.Type.displayCutout()|WindowInsets.Type.ime());
@@ -282,9 +283,15 @@ public class MainActivity extends Activity {
     private JSONObject currentChat(){JSONObject snapshot=snapshots.get(selectedPc);JSONArray chats=snapshot==null?null:snapshot.optJSONArray("chats");if(chats!=null)for(int i=0;i<chats.length();i++)if(chats.optJSONObject(i).optString("id").equals(selectedChat))return chats.optJSONObject(i);return null;}
     private void refreshLiveChat(){
         if(liveOutput==null)return;JSONObject chat=currentChat();liveOutput.setText(chat==null?"Waiting for chat output…":chat.optString("output","No output yet"));
-        if(liveStatus!=null)liveStatus.setText(connection(selectedPc)+(chat==null?"":" · "+chat.optString("status")));
+        JSONObject prompt=chat==null?null:chat.optJSONObject("replyPrompt");
+        if(liveStatus!=null)liveStatus.setText(connection(selectedPc)+(prompt!=null?" · Waiting for your reply":chat==null?"":" · "+chat.optString("status")));
+        if(liveSend!=null){liveSend.setText(prompt==null?"Send work":"Reply to current prompt");liveSend.setTag(prompt==null?"":prompt.optString("id"));}
         JSONObject snapshot=snapshots.get(selectedPc);JSONArray receipts=snapshot==null?null:snapshot.optJSONArray("receipts");
-        if(receipts!=null&&liveReceipt!=null&&lastMessageId!=null)for(int i=0;i<receipts.length();i++){JSONObject r=receipts.optJSONObject(i);if(lastMessageId.equals(r.optString("id")))liveReceipt.setText("Receipt: "+r.optString("status")+" · "+lastMessageId);}
+        int queued=0;String reason="";
+        if(receipts!=null)for(int i=0;i<receipts.length();i++){JSONObject r=receipts.optJSONObject(i);if(selectedChat.equals(r.optString("chatId"))&&"queued".equals(r.optString("status"))){queued++;reason=r.optString("reason");}}
+        if(liveQueueState!=null)liveQueueState.setText(queued>0?queued+" work message(s) queued. "+reason:prompt!=null?"Read the question above, enter your answer, then tap Reply to current prompt. A reply is sent once to this question only.":"Messages wait while the AI is busy or needs your approval.");
+        if(discardQueued!=null)discardQueued.setVisibility(queued>0?View.VISIBLE:View.GONE);
+        if(receipts!=null&&liveReceipt!=null&&lastMessageId!=null)for(int i=0;i<receipts.length();i++){JSONObject r=receipts.optJSONObject(i);if(lastMessageId.equals(r.optString("id"))&&selectedChat.equals(r.optString("chatId")))liveReceipt.setText("Receipt: "+r.optString("status")+" · "+lastMessageId+" · "+r.optString("error",r.optString("reason","")));}
     }
     private void liveChat(){
         JSONObject chat=currentChat();heading(pcName(selectedPc),chat==null?"AI chat":chat.optString("name"),"Read the latest terminal output and send work to this chat.");
@@ -293,20 +300,32 @@ public class MainActivity extends Activity {
         String outgoingKey="outgoing."+selectedPc+"."+selectedChat;
         try{String saved=prefs.getString(outgoingKey,null);retryMessage=saved==null?null:new JSONObject(saved);}catch(JSONException e){retryMessage=null;}
         messageInput=input(content,"Message",retryMessage==null?"":retryMessage.optString("text"),true);
-        TextView receipt=text("Messages wait while the AI is busy or needs your approval.",13,MUTED,false);content.addView(receipt);liveReceipt=receipt;
-        TextView send=action(content,"Send work",true,()->{});
+        liveQueueState=text("",13,MUTED,false);content.addView(liveQueueState);
+        TextView receipt=text("",13,MUTED,false);content.addView(receipt);liveReceipt=receipt;
+        discardQueued=action(content,"Discard queued work for this chat",false,()->{
+            String pcId=selectedPc,chatId=selectedChat;discardQueued.setEnabled(false);
+            network.execute(()->{try{JSONObject result=links.request(links.load(pcId),"message",new JSONObject().put("kind","cancel").put("chatId",chatId));runOnUiThread(()->{receipt.setText("Cancelled "+result.optInt("count")+" queued message(s).");if(discardQueued!=null)discardQueued.setEnabled(true);});}
+            catch(Exception e){runOnUiThread(()->{receipt.setText(e.getMessage());if(discardQueued!=null)discardQueued.setEnabled(true);});}});
+        });
+        TextView send=action(content,"Send work",true,()->{});liveSend=send;
         send.setOnClickListener(v->{String message=messageInput.getText().toString().trim();if(message.isEmpty()){messageInput.setError("Write instructions first");return;}
-            try{if(retryMessage==null||!message.equals(retryMessage.optString("text")))retryMessage=new JSONObject().put("id",UUID.randomUUID().toString()).put("chatId",selectedChat).put("text",message);}
+            String promptId=String.valueOf(send.getTag());
+            try{if(retryMessage==null||!message.equals(retryMessage.optString("text"))){
+                retryMessage=new JSONObject().put("id",UUID.randomUUID().toString()).put("chatId",selectedChat).put("text",message);
+                if(!promptId.isEmpty()&&!"null".equals(promptId))retryMessage.put("kind","reply").put("promptId",promptId);
+            }}
             catch(JSONException ignored){return;}
             JSONObject request=retryMessage;lastMessageId=request.optString("id");
             if(!prefs.edit().putString(outgoingKey,request.toString()).commit()){receipt.setText("Could not save message retry state; nothing sent.");return;}
             String pcId=selectedPc;send.setEnabled(false);receipt.setText("Sending…");
             network.execute(()->{try{JSONObject descriptor=links.load(pcId);if(descriptor==null)throw new Exception("Pair this computer first");JSONObject result=links.request(descriptor,"message",request);
-                runOnUiThread(()->{receipt.setText("Receipt: "+result.optString("status")+" · "+result.optString("id"));messageInput.setText("");retryMessage=null;prefs.edit().remove(outgoingKey).apply();send.setEnabled(true);});}
-                catch(Exception e){runOnUiThread(()->{receipt.setText(e.getMessage()+". Retry keeps the same message ID.");send.setEnabled(true);});}
+                runOnUiThread(()->{receipt.setText(("reply".equals(request.optString("kind"))?"Reply: ":"Receipt: ")+result.optString("status")+" · "+result.optString("id"));messageInput.setText("");retryMessage=null;prefs.edit().remove(outgoingKey).apply();send.setEnabled(true);});}
+                catch(Exception e){runOnUiThread(()->{boolean changed="reply".equals(request.optString("kind"))&&e.getMessage()!=null&&e.getMessage().toLowerCase(java.util.Locale.ROOT).contains("prompt changed");
+                    if(changed){retryMessage=null;prefs.edit().remove(outgoingKey).apply();}
+                    receipt.setText(e.getMessage()+(changed?" Read the current question before sending again.":". Retry keeps the same message ID."));send.setEnabled(true);});}
             });
         });
-        action(content,"Back to chats",false,()->{selectedChat=null;render();});
+        action(content,"Back to chats",false,()->{selectedChat=null;render();});refreshLiveChat();
     }
     private void remoteSettings(){
         LinearLayout box=dialogBox();box.addView(text("Uses Tailscale’s free personal account for your own devices. Workbench pairing still controls access to projects and chats. Only this app’s traffic uses the connection.",14,MUTED,false));space(box,12);

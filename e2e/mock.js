@@ -79,6 +79,13 @@
           delete T.bridgePending?.[args.id];
           return null;
         }
+        case 'terminal_submit_reply': {
+          const t = T.terminals[args.id];
+          if (!t?.alive) throw new Error('This session has ended');
+          t.input.push(args.text, '\r');
+          t.send('Reply received: ' + args.text + '\r\n› \r\n\r\n? for shortcuts');
+          return null;
+        }
         case 'terminal_submit_prompt': {
           const t = T.terminals[args.id];
           if (!t?.alive) throw new Error('This session has ended');

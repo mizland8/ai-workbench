@@ -1,6 +1,6 @@
 # Workbench Companion for Android
 
-Native Android companion for AI Workbench. Version 0.3.1 improves local Wi-Fi setup and connection errors; built-in remote access requires desktop Workbench 0.2.16 or later for that mode. LAN mode remains compatible with 0.2.15.
+Native Android companion for AI Workbench. Version 0.3.2 adds explicit replies to current approval/menu prompts (requires desktop 0.2.18), queued-work reasons and cancellation; built-in remote access requires desktop Workbench 0.2.16 or later for that mode. LAN mode remains compatible with 0.2.15.
 
 ## Built-in remote access
 

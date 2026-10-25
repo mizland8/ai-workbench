@@ -3,7 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
-import { startTerminal, writeTerminal, resizeTerminal, stopTerminal, openLink, submitTerminalPrompt } from './backend.js';
+import { startTerminal, writeTerminal, resizeTerminal, stopTerminal, openLink, submitTerminalPrompt, submitTerminalReply } from './backend.js';
 import { detectAgentState, deliveryState, promptDraft, AgentStatus } from './agent-status.js';
 import { THEMES, DEFAULT_THEME } from './themes.js';
 
@@ -167,6 +167,18 @@ export class TerminalView {
     } finally {
       if (generation === this.generation) this.submitting = false;
     }
+  }
+
+  // Only an explicitly requested user reply can answer an approval or menu.
+  async replyToPrompt(text, isCurrent) {
+    const delivery = await this.refreshPrompt();
+    if (!['approval_pending', 'user_input_required'].includes(delivery.state) || !isCurrent()) {
+      const error = new Error('The prompt changed. Refresh the chat before replying.'); error.beforeSubmit = true; throw error;
+    }
+    this.submitting = true; this.lastInputAt = Date.now();
+    const generation = this.generation;
+    try { await submitTerminalReply(this.id, text); }
+    finally { if (generation === this.generation) this.submitting = false; }
   }
 
   handleKey(event) {

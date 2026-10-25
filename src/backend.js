@@ -121,6 +121,7 @@ export async function listenDelegation(handler) {
   });
   await invoke('bridge_listen', { events: delegationEvents });
 }
+export const submitTerminalReply = (id, text) => invoke('terminal_submit_reply', { id, text });
 export const submitTerminalPrompt = (id, prompt) => invoke('terminal_submit_prompt', { id, prompt });
 
 export const sessionPermissions = id => isDesktop ? invoke('session_permissions', { id }) : Promise.resolve(null);

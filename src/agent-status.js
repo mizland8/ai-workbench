@@ -113,7 +113,7 @@ export function deliveryState({ tool, lines, status = 'running', id = 1, submitt
   if (!lastOutputAt) return blocked('starting', 'This chat is still starting.');
   const observed = detectAgentState(tool, lines);
   if (observed === 'waiting') {
-    const text = lines.slice(-20).join(' ');
+    const text = lines.filter(line => line.trim()).slice(-20).join(' ');
     const approval = /permission|approval|following|proceed|trust|allow once|accept this change/i.test(text);
     return blocked(approval ? 'approval_pending' : 'user_input_required', approval
       ? 'This chat is waiting for the user to answer an approval; tasks are delivered after that.' : 'This chat is waiting for the user to answer a question; tasks are delivered after that.');

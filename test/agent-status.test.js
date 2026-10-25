@@ -134,3 +134,9 @@ test('messages wait only for working, approvals, questions and open menus', () =
   for (const [tool, screen] of Object.entries(prompts)) for (const kind of ['draft', 'multiline']) assert.equal(ready(tool, screen[kind]), true, `${tool} ${kind}`);
   assert.equal(ready('agy', ['Unknown startup screen']), true);
 });
+
+test('folder trust at the top of a tall terminal remains an approval prompt', () => {
+  const result = deliveryState({tool:'codex',lines:['Folder access','Trust this folder?','1. Trust and continue','› 2. Quit','enter continue · esc quit',...Array(50).fill('')],lastOutputAt:100});
+  assert.equal(result.state,'approval_pending');
+  assert.match(result.reason,/approval/);
+});
