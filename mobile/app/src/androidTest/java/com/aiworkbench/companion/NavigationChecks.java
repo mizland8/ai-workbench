@@ -28,6 +28,8 @@ final class NavigationChecks {
         try{
             StringBuilder output=new StringBuilder("First computer output\n");for(int i=0;i<300;i++)output.append("terminal output line\n");
             JSONObject first=snapshot("project-one","chat-one",output.toString()),second=snapshot("project-two","chat-two","Second computer output");
+            first.put("usage",new JSONObject().put("generatedAt",System.currentTimeMillis()).put("tools",new JSONArray().put(new JSONObject().put("id","codex").put("limits",new JSONArray().put(new JSONObject().put("label","5-hour").put("usedPercent",42))))));
+            second.put("usage",new JSONObject().put("generatedAt",System.currentTimeMillis()).put("tools",new JSONArray().put(new JSONObject().put("id","codex").put("limits",new JSONArray().put(new JSONObject().put("label","5-hour").put("usedPercent",81))))));
             ui(()->{
                 set("watchGeneration",((Integer)get("watchGeneration"))+1);
                 set("pcs",new JSONArray().put(new JSONObject().put("id","navigation-test-one").put("name","Home PC")).put(new JSONObject().put("id","navigation-test-two").put("name","MacBook")));
@@ -38,6 +40,8 @@ final class NavigationChecks {
                 click("Open chats");require(has("Home PC  ›  Shared project"),"Computer/project context missing");click("Open conversation");require(has("Home PC  ›  Shared project"),"Conversation breadcrumb missing");
             });
             ui(()->{Rect r=new Rect();require(((View)get("liveSend")).getGlobalVisibleRect(r)&&r.height()>0,"Composer hidden: size="+((View)get("liveSend")).getWidth()+"x"+((View)get("liveSend")).getHeight()+" focus="+activity.hasWindowFocus());((EditText)get("messageInput")).setText("Unsent note");});
+            ui(()->{call("openUsage",null);require(has("Usage limits")&&has("Home PC")&&has("MacBook")&&has("5-hour · 42% used · 58% remaining")&&has("5-hour · 81% used · 19% remaining"),"Usage limits are missing or not grouped by computer");});
+            back();ui(()->require("chat-one".equals(get("selectedChat"))&&"Unsent note".equals(((EditText)get("messageInput")).getText().toString()),"Usage Back lost conversation context or draft"));
             back();ui(()->{require(get("selectedChat")==null&&"project-one".equals(get("selectedProject")),"Back did not return to chats");require(!activity.isFinishing(),"Back closed app");});
             back();ui(()->require(get("selectedProject")==null&&"navigation-test-one".equals(get("selectedPc")),"Back did not return to selected computer's projects"));
             back();ui(()->{require(get("selectedPc")==null&&has("Computers"),"Back did not return to Computers");call("openComputer","navigation-test-one");click("Open chats");click("Open conversation");require("Unsent note".equals(((EditText)get("messageInput")).getText().toString()),"Unsent draft lost");});

@@ -1,6 +1,6 @@
 # Workbench Companion for Android
 
-Native Android companion for AI Workbench. Version 0.4.0 uses **Computers → Projects → Chats → Conversation**, preserves context with breadcrumbs, handles system Back within the app, and keeps the composer fixed below terminal output. Desktop Workbench 0.2.19 is recommended; replies to approval/menu prompts require 0.2.18 or later. LAN pairing remains compatible with 0.2.15.
+Native Android companion for AI Workbench. Version 0.4.1 restores a visible Usage shortcut with allowances grouped by computer, and uses **Computers → Projects → Chats → Conversation**, preserves context with breadcrumbs, handles system Back within the app, and keeps the composer fixed below terminal output. Desktop Workbench 0.2.19 is recommended; replies to approval/menu prompts require 0.2.18 or later. LAN pairing remains compatible with 0.2.15.
 
 ## Built-in remote access
 
