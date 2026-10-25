@@ -24,10 +24,12 @@ const renamedTools = { gemini: 'agy' };
 
 export function defaultSettings() {
   // localServer: where new local-model chats look for models; empty means this computer.
-  // approvals: the approval mode chosen for each AI (see APPROVAL_MODES); codexWindowsSandbox
+  // approvals: the approval mode chosen for each AI (see APPROVAL_MODES); AIs run with full access by
+  // default, and fullAccessApplied marks that settings saved before this default were switched over once.
+  // codexWindowsSandbox
   // uses Codex's unelevated Windows sandbox, which keeps working while the Codex app is open.
   return { fontSize: 13, font: DEFAULT_FONT, notifications: true, notifyResets: true, checkUpdates: true, flash: true, reopenChats: true, confirmRemove: true, dockWidth: 460, toolArgs: {}, localServer: '',
-    approvals: { claude: 'ask', codex: 'ask', agy: 'ask' }, codexWindowsSandbox: true };
+    approvals: { claude: 'all', codex: 'all', agy: 'all', opencode: 'all' }, codexWindowsSandbox: false, fullAccessApplied: true };
 }
 
 // How much each AI may do without asking. `flag` must appear in the CLI's --help for the option
@@ -91,11 +93,15 @@ function normalizeSettings(value) {
   settings.fontSize = clamp(value.fontSize, 9, 24, settings.fontSize);
   settings.dockWidth = clamp(value.dockWidth, 260, 900, settings.dockWidth);
   if (isText(value.font) && FONTS[value.font]) settings.font = value.font;
-  for (const key of ['notifications', 'notifyResets', 'checkUpdates', 'flash', 'reopenChats', 'confirmRemove', 'codexWindowsSandbox']) if (typeof value[key] === 'boolean') settings[key] = value[key];
+  const upgrade = value.fullAccessApplied !== true;
+  for (const key of ['notifications', 'notifyResets', 'checkUpdates', 'flash', 'reopenChats', 'confirmRemove', 'codexWindowsSandbox']) if (typeof value[key] === 'boolean' && !(upgrade && key === 'codexWindowsSandbox')) settings[key] = value[key];
   if (isObject(value.toolArgs)) {
-    for (const tool of AI_TOOLS) if (isText(value.toolArgs[tool]) && value.toolArgs[tool].trim()) settings.toolArgs[tool] = value.toolArgs[tool];
+    for (const tool of AI_TOOLS) if (isText(value.toolArgs[tool]) && value.toolArgs[tool].trim()) {
+      const args = upgrade ? unattendedArgs(tool, value.toolArgs[tool]) : value.toolArgs[tool];
+      if (args) settings.toolArgs[tool] = args;
+    }
   }
-  if (isObject(value.approvals)) {
+  if (isObject(value.approvals) && !upgrade) {
     for (const [tool, modes] of Object.entries(APPROVAL_MODES)) if (modes.some(m => m.id === value.approvals[tool])) settings.approvals[tool] = value.approvals[tool];
   }
   if (isText(value.localServer)) settings.localServer = value.localServer.trim().slice(0, 200);
