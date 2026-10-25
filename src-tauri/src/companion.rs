@@ -159,7 +159,7 @@ impl Companion {
     }
 }
 // Enumerate real LAN adapters; never suggest a VPN or container address for Wi-Fi pairing.
-fn lan_addresses() -> Vec<Ipv4Addr> {
+pub(crate) fn lan_addresses() -> Vec<Ipv4Addr> {
     let mut addresses: Vec<_> = if_addrs::get_if_addrs().unwrap_or_default().into_iter()
         .filter(|i| !["docker", "veth", "br-", "virbr", "tailscale", "tun", "utun", "wg", "zt"].iter().any(|prefix| i.name.to_lowercase().starts_with(prefix)))
         .filter_map(|i| match i.ip() { std::net::IpAddr::V4(ip) if ip.is_private() => Some(ip), _ => None })

@@ -51,6 +51,7 @@
         case 'mesh_enable': T.mesh = { enabled: true, name: args.name, state: 'NeedsLogin', authUrl: 'https://login.tailscale.com/a/test-login', peers: [] }; return { enabled: true };
         case 'mesh_action': if (args.action === 'login') T.mesh.authUrl = 'https://login.tailscale.com/a/test-login'; if (args.action === 'disable') T.mesh = { enabled: false }; if (args.action === 'logout') T.mesh = { enabled: true, state: 'NeedsLogin', peers: [] }; return {};
         case 'mesh_pairing': return { host: T.mesh.host, port: T.companionStatus.port, transport: 'mesh', cert: 'test-certificate', code: 'test-pairing-code' };
+        case 'companion_network_setup': if (T.networkSetupError) throw T.networkSetupError; return {message:'Local Wi-Fi firewall rule configured.'};
         case 'companion_status': return T.companionStatus ?? { enabled: false, port: null, clients: [] };
         case 'companion_enable': return T.companionStatus = { enabled: true, port: args.port, clients: [] };
         case 'companion_disable': T.companionStatus = { enabled: false, port: null, clients: [] }; return null;

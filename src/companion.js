@@ -90,7 +90,7 @@ export function startCompanion({ state, panes, getUsage, openChat, showDialog, e
       <label>Port<input name="companion-port" type="number" value="${status.port ?? 47931}" min="1" max="65535"></label>
       <button type="button" data-enable>${enabled ? 'Disable linking' : 'Enable linking'}</button>
       <p class="dialog-note">Use the same Wi-Fi or a private network such as Tailscale. Windows/macOS may ask you to allow incoming connections. Pairing grants access to projects, usage, AI chat output, and sending messages.</p>
-      ${enabled ? '<label>This PC’s IP address or hostname<input name="companion-host" placeholder="Detect automatically" autocomplete="off"></label><button type="button" data-pairing>Create pairing code</button><p data-pairing-status role="status"></p><textarea data-code rows="4" readonly hidden aria-label="Pairing code"></textarea><p class="dialog-note">Paste the complete code into the phone or another Workbench. It expires after five minutes and can be used once.</p>' : ''}
+      ${enabled ? '<label>This PC’s IP address or hostname<input name="companion-host" placeholder="Detect automatically" autocomplete="off"></label><button type="button" data-network-setup>Allow Wi-Fi connections</button><p data-network-status role="status" class="dialog-note">If the phone cannot connect, allow Workbench through this PC’s firewall. Your OS may ask for administrator approval once.</p><button type="button" data-pairing>Create pairing code</button><p data-pairing-status role="status"></p><textarea data-code rows="4" readonly hidden aria-label="Pairing code"></textarea><p class="dialog-note">Paste the complete code into the phone or another Workbench. It expires after five minutes and can be used once.</p>' : ''}
       ${status.clients.map(c => `<p>${escape(c.name)} <button type="button" data-revoke="${escape(c.id)}">Revoke access</button></p>`).join('')}
       <button type="button" data-clear>Clear delivered message receipts</button></fieldset>
       <fieldset><legend>Remote access from anywhere</legend>
@@ -168,6 +168,13 @@ export function startCompanion({ state, panes, getUsage, openChat, showDialog, e
         enabled = !enabled; box.close(); dialog();
       } catch (e) { error(e); }
     };
+    box.querySelector('[data-network-setup]')?.addEventListener('click', async () => {
+      const button = box.querySelector('[data-network-setup]'), note = box.querySelector('[data-network-status]');
+      button.disabled = true; note.textContent = 'Complete the system network permission prompt. Workbench will not retry automatically.';
+      try { const result = await backend.companionNetworkSetup(); note.textContent = result.message; }
+      catch (e) { note.textContent = e?.message ?? String(e); }
+      finally { button.disabled = false; }
+    });
     box.querySelector('[data-pairing]')?.addEventListener('click', async () => {
       const button = box.querySelector('[data-pairing]'), note = box.querySelector('[data-pairing-status]'), field = box.querySelector('[data-code]');
       button.disabled = true; note.className = ''; note.textContent = 'Creating pairing code…'; field.hidden = true;

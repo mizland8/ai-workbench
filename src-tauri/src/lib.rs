@@ -1,5 +1,6 @@
 pub mod bridge;
 mod companion;
+mod lan_setup;
 mod mesh;
 mod env;
 mod local_models;
@@ -98,6 +99,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             mesh::mesh_status, mesh::mesh_enable, mesh::mesh_action, mesh::mesh_pairing,
+            lan_setup::companion_network_setup,
             companion::companion_status, companion::companion_enable, companion::companion_disable,
             companion::companion_pairing, companion::companion_revoke, companion::companion_publish,
             companion::companion_listen, companion::companion_respond, companion::companion_remote,

@@ -665,6 +665,15 @@ try {
   await click('.app-header [data-action=computers]'); await wait(100);
   check('computer linking starts disabled', await q(`document.querySelector('dialog[open]').textContent.includes('Linking is off')`));
   await click('dialog [data-enable]'); await wait(150);
+  check('network setup never requests elevation automatically', (await calls('companion_network_setup')).length === 0);
+  await page.eval(`__AIW_TEST__.networkSetupError = 'Network setup was cancelled or denied.'`);
+  await click('dialog [data-network-setup]'); await wait(150);
+  check('cancelled firewall setup is visible and allows manual retry', await q(`document.querySelector('[data-network-status]').textContent.includes('cancelled') && !document.querySelector('[data-network-setup]').disabled`));
+  await wait(2200);
+  check('cancelled firewall setup never retries itself', (await calls('companion_network_setup')).length === 1);
+  await page.eval(`__AIW_TEST__.networkSetupError = null`);
+  await click('dialog [data-network-setup]'); await wait(150);
+  check('successful firewall setup is acknowledged beside the button', await q(`document.querySelector('[data-network-status]').textContent.includes('configured')`));
   await page.eval(`document.querySelector('[name="companion-host"]').value = ''; __AIW_TEST__.pairingError = "No local Wi-Fi or Ethernet address found."`);
   await click('dialog [data-pairing]'); await wait(100);
   check('pairing failures appear beside the button and allow retry', await q(`document.querySelector('[data-pairing-status]').textContent.includes('No local Wi-Fi') && !document.querySelector('[data-pairing]').disabled && document.querySelector('[data-code]').hidden`));

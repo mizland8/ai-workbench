@@ -51,6 +51,8 @@ final class LinkClient {
             if(stream==null)throw new IOException("Computer returned HTTP "+status);
             ByteArrayOutputStream bytes=new ByteArrayOutputStream();try(InputStream in=stream){byte[] buffer=new byte[8192];int n;while((n=in.read(buffer))!=-1){if(bytes.size()+n>8*1024*1024)throw new IOException("Snapshot too large");bytes.write(buffer,0,n);}}
             JSONObject result=new JSONObject(bytes.toString("UTF-8"));if(status<200||status>=300)throw new IOException(result.optString("error","Computer returned HTTP "+status));return result;
+        }catch(SocketTimeoutException|ConnectException e){
+            throw new IOException("Cannot reach "+host+":"+port+". Keep Workbench open, connect both devices to the same Wi-Fi, and click Allow Wi-Fi connections in Workbench on the PC.",e);
         }finally{c.disconnect();}
     }
     JSONObject pair(String code,String name)throws Exception{

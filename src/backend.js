@@ -125,6 +125,7 @@ export const submitTerminalPrompt = (id, prompt) => invoke('terminal_submit_prom
 
 export const sessionPermissions = id => isDesktop ? invoke('session_permissions', { id }) : Promise.resolve(null);
 
+export const companionNetworkSetup = () => invoke('companion_network_setup');
 export const companionStatus = () => invoke('companion_status');
 export const companionEnable = port => invoke('companion_enable', { port });
 export const companionDisable = () => invoke('companion_disable');

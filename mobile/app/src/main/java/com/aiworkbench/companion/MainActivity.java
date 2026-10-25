@@ -270,7 +270,7 @@ public class MainActivity extends Activity {
         }));dialog.show();
     }
     private void pairPc(JSONObject pc){
-        LinearLayout box=dialogBox();box.addView(text("On the PC: Computers → Enable built-in remote access → sign in → Create remote pairing code. Sign in on this phone too, then paste the complete code below. LAN pairing codes also work on the same network.",14,MUTED,false));
+        LinearLayout box=dialogBox();box.addView(text("For local Wi-Fi: connect the phone and PC to the same network. On the PC, open Computers → Enable linking → Create pairing code, then paste the complete code below. No Tailscale account is needed. If the connection times out, click Allow Wi-Fi connections on the PC. For access away from home, use a remote pairing code instead.",14,MUTED,false));
         EditText code=input(box,"Pairing code","",true);code.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE|InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Link "+pc.optString("name")).setView(box).setNegativeButton("Cancel",null).setPositiveButton("Pair",null).create();
         dialogs++;dialog.setOnDismissListener(d->dialogs--);

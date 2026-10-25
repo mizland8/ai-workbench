@@ -1,6 +1,6 @@
 [package]
 name = "ai-workbench"
-version = "0.2.16"
+version = "0.2.17"
 description = "Run AI coding agents side by side in your project folders"
 authors = ["AI Workbench contributors"]
 license = "MIT"
@@ -30,6 +30,7 @@ tauri-plugin-notification = "2"
 tauri-plugin-updater = "2.13.1"
 tauri-plugin-process = "2.4.0"
 if-addrs = "0.15"
+base64 = "0.22"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
