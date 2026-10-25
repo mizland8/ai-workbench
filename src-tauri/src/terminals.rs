@@ -128,6 +128,8 @@ pub struct ToolOption {
     label: String,
     flag: String,
     args: Vec<String>,
+    #[serde(default)]
+    permission: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -244,7 +246,18 @@ fn plan(request: &StartRequest) -> Result<Plan, String> {
             if tool == Tool::Codex && request.options.iter().any(|o| ["--ask-for-approval", "--approve-for-me", "--dangerously-bypass-approvals-and-sandbox"].contains(&o.flag.as_str())) {
                 check_permission_overrides(&request.extra_args)?;
             }
+            if tool == Tool::Opencode {
+                if let Some(permission) = request.options.iter().find_map(|o| o.permission.as_deref()) {
+                    if !["ask", "allow"].contains(&permission) { return Err("Invalid OpenCode permission mode".into()); }
+                    let mut config = plan.env.iter().find(|(k,_)| k == "OPENCODE_CONFIG_CONTENT")
+                        .and_then(|(_,v)| serde_json::from_str::<serde_json::Value>(v).ok()).unwrap_or_else(|| serde_json::json!({}));
+                    config["permission"] = serde_json::json!(permission);
+                    plan.env.retain(|(k,_)| k != "OPENCODE_CONFIG_CONTENT");
+                    plan.env.push(("OPENCODE_CONFIG_CONTENT".into(), config.to_string()));
+                }
+            }
             let program = plan.program.clone();
+            validate_permission_options(&request.options, |flag| tools::supports_flag(&program, flag))?;
             let skipped = add_options(&mut plan.args, &request.options, |flag| tools::supports_flag(&program, flag));
             if !skipped.is_empty() {
                 let text = format!("This version of {} doesn't offer {}, so it was left out.", tool.name(), skipped.join(", "));
@@ -314,6 +327,16 @@ fn brief(plan: &mut Plan, tool: Tool, text: &str, chat_id: &str) {
 }
 
 /// Add each recommended option the CLI supports; returns the labels of those it doesn't.
+fn validate_permission_options(options: &[ToolOption], supports: impl Fn(&str) -> bool) -> Result<(),String> {
+    for option in options {
+        if ["--ask-for-approval", "--approve-for-me", "--dangerously-bypass-approvals-and-sandbox", "--permission-mode", "--dangerously-skip-permissions", "--mode"].contains(&option.flag.as_str()) {
+            for flag in option.args.iter().filter(|arg| arg.starts_with("--")) {
+                if !supports(flag) { return Err(format!("The selected permission mode requires {flag}, which this installed CLI does not advertise. Update the AI CLI or select a supported permission mode in Settings. Workbench will not silently change your access settings.")); }
+            }
+        }
+    } Ok(())
+}
+
 fn add_options(args: &mut Vec<String>, options: &[ToolOption], supports: impl Fn(&str) -> bool) -> Vec<String> {
     let mut skipped = Vec::new();
     for option in options.iter().filter(|o| !o.args.is_empty()) {
@@ -631,8 +654,16 @@ mod tests {
     }
 
     #[test]
+    fn permission_presets_require_every_permission_flag() {
+        let option = ToolOption { label: "workspace".into(), flag: "--ask-for-approval".into(), args: vec!["--ask-for-approval".into(), "on-request".into(), "--sandbox".into(), "workspace-write".into()], permission: None };
+        assert!(validate_permission_options(&[option], |flag| flag == "--ask-for-approval").unwrap_err().contains("--sandbox"));
+        let option = ToolOption { label: "full access".into(), flag: "--dangerously-bypass-approvals-and-sandbox".into(), args: vec!["--dangerously-bypass-approvals-and-sandbox".into()], permission: None };
+        assert!(validate_permission_options(&[option], |_| true).is_ok());
+    }
+
+    #[test]
     fn recommended_options_are_added_only_when_the_cli_lists_them() {
-        let option = |label: &str, flag: &str, args: &[&str]| ToolOption { label: label.into(), flag: flag.into(), args: args.iter().map(|a| a.to_string()).collect() };
+        let option = |label: &str, flag: &str, args: &[&str]| ToolOption { label: label.into(), flag: flag.into(), args: args.iter().map(|a| a.to_string()).collect(), permission: None };
         let options = [
             option("the Windows sandbox", "--config", &["-c", "windows.sandbox=unelevated"]),
             option("automatic approval review", "--approve-for-me", &["--approve-for-me"]),

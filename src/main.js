@@ -1,3 +1,4 @@
+import { startCompanion } from './companion.js';
 import { coordinationPolicy } from './coordination.js';
 import './styles.css';
 import * as store from './store.js';
@@ -68,7 +69,7 @@ function renderSkeleton() {
       <button class="header-button" id="usage-button" data-action="usage" aria-haspopup="dialog" title="AI subscription allowances, reset times, and token usage"></button>
       <button class="header-button tools-button" id="tools-button" data-action="tools" title="Connect your AI tools"></button>
       <button class="header-button update-button" id="update-button" data-action="settings" title="A new version of AI Workbench is ready to install" hidden></button>
-      <button class="header-button" data-action="settings" title="Settings">settings</button></header>
+      <button class="header-button" data-action="computers" title="Computers and phone">computers</button><button class="header-button" data-action="settings" title="Settings">settings</button></header>
     <div class="workspace"><aside class="sidebar" id="sidebar" aria-label="Projects and chats"></aside><main>
       <div class="workspace-toolbar" id="toolbar"></div>
       <nav class="open-tabs" id="tabs" aria-label="Open chats"></nav>
@@ -372,7 +373,7 @@ class Pane {
     // (a --model there would pick a different model).
     this.permissionSelection = JSON.stringify({ approvals: state.settings.approvals[chat.tool], extraArgs: state.settings.toolArgs[chat.tool] ?? '', windowsSandbox: state.settings.codexWindowsSandbox });
     const launchSelection = JSON.parse(this.permissionSelection);
-    const launchOptions = shell || local ? [] : store.toolOptions(state.settings, chat.tool, { windows: isWindows });
+    const launchOptions = shell ? [] : store.toolOptions(state.settings, engine, { windows: isWindows });
     return this.view.start({ kind: shell ? 'shell' : 'chat', chatId: chat.id, tool: shell ? null : engine, sessionId: chat.sessionId,
       knownSessions: state.chats.filter(c => c.id !== chat.id && c.sessionId).map(c => c.sessionId),
       cwd: projectPath(chat) || null, toolPath: state.toolPaths[engine] ?? null,
@@ -697,7 +698,7 @@ function settingsDialog({ focus = '' } = {}) {
     <fieldset><legend>Safeguards</legend>
       ${toggle('confirmRemove', 'Ask before removing a chat', 'Shows “Are you sure?” when you remove a chat with × in the sidebar or “Delete chat…”.')}
     </fieldset>
-    <fieldset><legend>Approvals</legend>
+    <fieldset><legend>Approvals</legend><button type="button" id="unattended-agents">Enable full access for all AIs on this PC</button><p class="dialog-note">Uses your account’s file and network access without AI approval prompts. OS administrator permissions and organization policies still apply. Restart and resume existing chats to apply.</p>
       <p class="dialog-note">How much each AI may do without asking you. Applies to chats started or reopened from now on. Approval questions an AI still asks stay for you to answer; other AIs never answer them.</p>
       ${Object.entries(store.APPROVAL_MODES).map(([t, modes]) => `<label class="row">${toolInfo[t].name}<select name="approval-${t}">${modes.map(m => `<option value="${m.id}" ${s.approvals[t] === m.id ? 'selected' : ''}>${escape(m.name)}${m.risky ? ' ⚠' : ''}</option>`).join('')}</select></label>
       <small class="approval-note" data-tool="${t}">${escape(modes.find(m => m.id === s.approvals[t])?.note ?? '')}</small>`).join('')}
@@ -716,6 +717,19 @@ function settingsDialog({ focus = '' } = {}) {
     </fieldset>
     <div class="dialog-actions"><button type="submit" class="primary">done</button></div>`, { className: 'settings-dialog' });
   const form = dialog.querySelector('form');
+  dialog.querySelector('#unattended-agents').addEventListener('click', () => {
+    for (const tool of Object.keys(store.APPROVAL_MODES)) {
+      s.approvals[tool] = 'all';
+      const cleaned = store.unattendedArgs(tool, s.toolArgs[tool] ?? '');
+      if (cleaned) s.toolArgs[tool] = cleaned; else delete s.toolArgs[tool];
+      const argsField = dialog.querySelector(`[name="args-${tool}"]`); if (argsField) argsField.value = cleaned;
+      const field = dialog.querySelector(`[name="approval-${tool}"]`); field.value = 'all';
+      dialog.querySelector(`.approval-note[data-tool="${tool}"]`).textContent = store.APPROVAL_MODES[tool].find(m => m.id === 'all').note;
+    }
+    s.codexWindowsSandbox = false;
+    const sandbox = dialog.querySelector('[name="codexWindowsSandbox"]'); if (sandbox) sandbox.checked = false;
+    update();
+  });
   refreshUpdateStatus = () => renderUpdateStatus(dialog.querySelector('.update-status'));
   refreshUpdateStatus();
   const showLocal = () => renderLocalStatus(dialog.querySelector('.local-status'));
@@ -1281,6 +1295,7 @@ async function attachFiles(id) {
 const actions = {
   'tools': () => toolsDialog(),
   'settings': () => settingsDialog(),
+  'computers': () => companion.dialog(),
   'local-settings': () => settingsDialog({ focus: 'localServer' }),
   'usage': () => toggleUsagePanel(),
   'refresh-usage': () => refreshUsage(true),
@@ -1551,3 +1566,5 @@ backend.resetTerminals().then(() => backend.listenDelegation(request => {
   checkFolders();
   backend.onFileDrop(handleFileDrop);
 });
+
+const companion = startCompanion({ state, panes, getUsage: () => usage, openChat: focusChat, showDialog, escape });

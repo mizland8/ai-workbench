@@ -47,6 +47,19 @@
             { id: 'opencode', buckets: [], limits: [], plan: null, problem: "OpenCode isn't installed." },
           ].map(tool => ({ ...tool, ...T.usageOverrides[tool.id] })) };
         }
+        case 'companion_status': return T.companionStatus ?? { enabled: false, port: null, clients: [] };
+        case 'companion_enable': return T.companionStatus = { enabled: true, port: args.port, clients: [] };
+        case 'companion_disable': T.companionStatus = { enabled: false, port: null, clients: [] }; return null;
+        case 'companion_pairing': return { host: args.host, port: T.companionStatus.port, cert: 'fixture-certificate', code: 'fixture-code' };
+        case 'companion_publish': T.companionSnapshot = args.snapshot; return null;
+        case 'companion_remote': if (args.method === 'list') return []; return null;
+        case 'companion_listen': {
+          T.companion = message => new Promise(resolve => {
+            const id = `remote-${nextCallback++}`; T.companionPending ??= {}; T.companionPending[id] = resolve;
+            send(args.events, { id, message });
+          }); return null;
+        }
+        case 'companion_respond': T.companionPending?.[args.id]?.(args.response); delete T.companionPending?.[args.id]; return null;
         case 'bridge_listen': {
           T.bridge = request => new Promise(resolve => {
             const id = `request-${nextCallback++}`;

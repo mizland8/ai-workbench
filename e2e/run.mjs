@@ -657,6 +657,31 @@ try {
   await wait(1700);
   check('permission selection and session identity survive an interface reload', (await saved()).settings.approvals.codex === 'never' && (await saved()).chats.find(c => c.id === lead).sessionId === savedSession);
 
+  await click('.app-header [data-action=settings]:not(#update-button)');
+  await click('#unattended-agents');
+  check('all-agent full access is selected explicitly for every engine', await q(`['claude','codex','agy','opencode'].every(t => document.querySelector('[name="approval-' + t + '"]').value === 'all')`));
+  await click('dialog [type=submit]');
+  check('unattended setting is persisted without forcing a running chat to restart', Object.values((await saved()).settings.approvals).every(v => v === 'all'));
+  await click('.app-header [data-action=computers]'); await wait(100);
+  check('computer linking starts disabled', await q(`document.querySelector('dialog[open]').textContent.includes('Linking is off')`));
+  await click('dialog [data-enable]'); await wait(150);
+  await page.eval(`document.querySelector('[name="companion-host"]').value = '192.168.1.20'`);
+  await click('dialog [data-pairing]'); await wait(100);
+  check('pairing is explicitly requested and includes the PC address', await q(`JSON.parse(document.querySelector('[data-code]').value).host === '192.168.1.20'`));
+  await click('dialog [data-dismiss]');
+  await show('codex', '› user draft\n\n? for shortcuts'); await wait(1900);
+  const remoteId = 'remote-test-1234';
+  const remoteMessage = { id: remoteId, chatId: lead, text: 'Remote task for the same AI' };
+  const remoteReply = await page.eval(`return await __AIW_TEST__.companion(${JSON.stringify(remoteMessage)});`);
+  check('remote message receives a durable queued receipt', remoteReply.status === 'queued');
+  await wait(2300);
+  check('remote work never overwrites a user draft', await q(`JSON.parse(localStorage.getItem('ai-workbench.remote-messages.v1')).find(m => m.id === '${remoteId}').status === 'queued'`));
+  await show('codex', '› \n\n? for shortcuts'); await wait(10000);
+  check('remote work is delivered when the chat is idle', await q(`JSON.parse(localStorage.getItem('ai-workbench.remote-messages.v1')).find(m => m.id === '${remoteId}').status === 'delivered'`));
+  const repeated = await page.eval(`return await __AIW_TEST__.companion(${JSON.stringify(remoteMessage)});`);
+  check('retrying a delivered remote message returns its receipt', repeated.status === 'delivered');
+  check('remote snapshots expose projects, chats and receipts', await q(`!!__AIW_TEST__.companionSnapshot?.chats?.length && __AIW_TEST__.companionSnapshot.receipts.some(m => m.id === '${remoteId}')`));
+
 
 } catch (error) {
   check('test run completed', false, String(error.stack ?? error));

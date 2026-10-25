@@ -124,3 +124,20 @@ export async function listenDelegation(handler) {
 export const submitTerminalPrompt = (id, prompt) => invoke('terminal_submit_prompt', { id, prompt });
 
 export const sessionPermissions = id => isDesktop ? invoke('session_permissions', { id }) : Promise.resolve(null);
+
+export const companionStatus = () => invoke('companion_status');
+export const companionEnable = port => invoke('companion_enable', { port });
+export const companionDisable = () => invoke('companion_disable');
+export const companionPairing = host => invoke('companion_pairing', { host });
+export const companionRevoke = id => invoke('companion_revoke', { id });
+export const companionPublish = snapshot => invoke('companion_publish', { snapshot });
+export const companionRemote = (method, id = null, body = {}) => invoke('companion_remote', { method, id, body });
+let companionEvents;
+export async function listenCompanion(handler) {
+  companionEvents = new Channel(async request => {
+    let response;
+    try { response = await handler(request); } catch (e) { response = { error: e.message }; }
+    await invoke('companion_respond', { id: request.id, response });
+  });
+  await invoke('companion_listen', { events: companionEvents });
+}

@@ -46,6 +46,11 @@ export const APPROVAL_MODES = {
     { id: 'never', name: 'Never ask, stay sandboxed', note: 'Commands run in the sandbox without asking: they can change the project folder but not the rest of the computer or the network.', flag: '--ask-for-approval', args: ['--ask-for-approval', 'never', '--sandbox', 'workspace-write'] },
     { id: 'all', name: 'Approve everything, no sandbox', note: 'Commands run with your full access to the computer and network. Use with care.', flag: '--dangerously-bypass-approvals-and-sandbox', args: ['--dangerously-bypass-approvals-and-sandbox'], risky: true },
   ],
+  opencode: [
+    { id: 'custom', name: 'Use CLI configuration', note: 'Uses OpenCode’s existing permission rules.' },
+    { id: 'ask', name: 'Ask before acting', note: 'Requests approval for tools.', permission: 'ask' },
+    { id: 'all', name: 'Approve everything', note: 'Allows tools and external directories using your account’s access.', permission: 'allow', risky: true },
+  ],
   agy: [
     { id: 'ask', name: 'Ask before acting', note: 'Antigravity CLI’s own default.' },
     { id: 'edits', name: 'Approve file edits', note: 'Edits files without asking.', flag: '--mode', args: ['--mode', 'accept-edits'] },
@@ -58,8 +63,9 @@ export const CODEX_WINDOWS_SANDBOX = { label: 'the unelevated Windows sandbox', 
 // The recommended options a chat with this AI starts with, as { label, flag, args }.
 export function toolOptions(settings, tool, { windows = false } = {}) {
   const options = [];
-  if (tool === 'codex' && windows && settings.codexWindowsSandbox) options.push(CODEX_WINDOWS_SANDBOX);
+  if (tool === 'codex' && windows && settings.codexWindowsSandbox && !['all', 'custom'].includes(settings.approvals?.codex)) options.push(CODEX_WINDOWS_SANDBOX);
   const mode = APPROVAL_MODES[tool]?.find(m => m.id === settings.approvals?.[tool]);
+  if (mode?.permission) options.push({ label: mode.name, flag: '', args: [], permission: mode.permission });
   if (mode?.args) options.push({ label: `${mode.name.toLowerCase()} (${mode.args.join(' ')})`, flag: mode.flag, args: mode.args });
   return options;
 }
@@ -382,4 +388,26 @@ export function splitArgs(text) {
   }
   if (started) args.push(current);
   return args;
+}
+
+// Remove only permission switches when the user explicitly chooses the all-agent preset.
+// Preserve model/server options, and encode with quoting understood by splitArgs.
+export function unattendedArgs(tool, text) {
+  const args = splitArgs(text), kept = [];
+  const valued = tool === 'codex' ? ['--sandbox', '-s', '--ask-for-approval', '-a', '--permissions'] : tool === 'claude' ? ['--permission-mode'] : tool === 'agy' ? ['--mode'] : [];
+  const switches = ['--dangerously-bypass-approvals-and-sandbox', '--dangerously-skip-permissions', '--approve-for-me', '--full-auto', '--auto'];
+  const permissionConfig = /^(approval_policy|approvals_reviewer|approval_reviewer|sandbox_mode|sandbox_workspace_write|permissions|default_permissions|windows\.sandbox)([.=]|$)/;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i], flag = arg.split('=')[0];
+    if (switches.includes(flag)) continue;
+    if (valued.includes(flag)) { if (!arg.includes('=')) i++; continue; }
+    if (tool === 'codex') {
+      if (/^-[as].+/.test(arg) && !arg.startsWith('--')) continue;
+      if (['-c', '--config'].includes(arg) && permissionConfig.test(args[i + 1] ?? '')) { i++; continue; }
+      const config = arg.startsWith('--config=') ? arg.slice(9) : arg.startsWith('-c') ? arg.slice(2) : '';
+      if (config && permissionConfig.test(config)) continue;
+    }
+    kept.push(arg);
+  }
+  return kept.map(arg => `'${arg.replaceAll("'", "'\"'\"'")}'`).join(' ');
 }

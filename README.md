@@ -168,3 +168,16 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 ## License
 
 [MIT](LICENSE)
+
+
+### Phone and other computers (0.2.15)
+
+Open **Computers** in the header and enable linking on each PC you want to reach. Enter that PC’s IPv4 address or hostname and create a pairing code. In the Android companion’s Computers screen, choose Link computer and paste the complete code. Another Workbench desktop can paste the same kind of code into its Other computers section. Codes expire in five minutes and are single-use. Revoke individual clients in the host PC’s Computers menu.
+
+Connections use HTTPS and the certificate included in the pairing code. Keep Workbench open and the PC awake. Use the same Wi-Fi or a private network such as Tailscale; allow the chosen incoming TCP port (default 47931) in the PC’s firewall if prompted. Linking is off after restarting Workbench until enabled again. The first version supports foreground phone updates, available AI allowance data, project/chat browsing, terminal output, and queued text messages. It does not attach to independently opened terminals or provide background phone notifications.
+
+A `queued` receipt means the message is saved on the PC. `delivered` means it was submitted to the AI’s prompt, not that the AI completed it. Messages wait for busy chats, approvals, menus, and unsent user drafts. Uncertain submissions are marked `delivery_unknown` and are never automatically replayed; inspect that chat on the host PC before deciding whether to send another message. Remote work received for a closed chat opens and resumes that chat.
+
+For uninterrupted AI access, choose **Settings → Enable full access for all AIs on this PC**, then restart/resume existing chats from their Session permissions menu. This configures Claude, Codex, Antigravity, OpenCode, and local-model chats using your account’s access. It removes conflicting extra permission switches while keeping model options. It does not grant administrator privileges or override macOS privacy controls or organization policies. Selected permission flags that the installed CLI does not support now produce an actionable startup error instead of silently falling back.
+
+Android source is in `mobile/`. GitHub CI builds and lints it; preview APKs are signed locally and attached to releases. The signing key is not stored in this repository or exported to GitHub.
