@@ -176,6 +176,17 @@ pub(crate) fn lan_addresses() -> Vec<Ipv4Addr> {
     }
     addresses
 }
+fn device_name() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).ok()
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| {
+                let path = if cfg!(target_os = "macos") { "/bin/hostname" } else { "/usr/bin/hostname" };
+                std::process::Command::new(path).arg("-s").output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            }).filter(|name| !name.is_empty()).unwrap_or_else(|| "Workbench computer".into())
+    })
+}
 #[tauri::command]
 pub fn companion_status(companion: State<'_, Companion>) -> Value {
     let clients = companion
@@ -192,7 +203,7 @@ pub fn companion_status(companion: State<'_, Companion>) -> Value {
         })
         .unwrap_or_default();
     let port = companion.runtime.lock().unwrap().as_ref().map(|r| r.port);
-    json!({"enabled":companion.inner.enabled.load(Ordering::SeqCst),"port":port,"clients":clients,"addresses":lan_addresses()})
+    json!({"enabled":companion.inner.enabled.load(Ordering::SeqCst),"port":port,"clients":clients,"addresses":lan_addresses(),"deviceName":device_name(),"platform":std::env::consts::OS})
 }
 #[tauri::command]
 pub fn companion_enable(

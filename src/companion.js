@@ -58,12 +58,12 @@ export function startCompanion({ state, panes, getUsage, openChat, showDialog, e
   catch (error) { console.error(error.message); }
   let enabled = false, publishing = false, delivering = new Set(), lastSnapshot = null;
   const lastSend = new Map(), replyPrompts = new ReplyPrompts();
-  let lastStatusAt = 0;
+  let lastStatusAt = 0, device = {};
   const publish = async () => {
     if (publishing) return;
     publishing = true;
     try {
-      if (Date.now() - lastStatusAt > 5000) { enabled = (await backend.companionStatus()).enabled; lastStatusAt = Date.now(); }
+      if (Date.now() - lastStatusAt > 5000) { const status = await backend.companionStatus(); enabled = status.enabled; device = { name: status.deviceName, platform: status.platform }; lastStatusAt = Date.now(); }
       if (!enabled) return;
       for (const message of queue?.messages ?? []) {
         if (message.kind === 'reply' || message.status !== 'queued' || delivering.has(message.chatId)) continue;
@@ -81,8 +81,8 @@ export function startCompanion({ state, panes, getUsage, openChat, showDialog, e
         } finally { delivering.delete(message.chatId); }
       }
       const snapshot = {
-        name: 'AI Workbench',
-        projects: state.projects.map(({ id, name }) => ({ id, name })),
+        name: 'AI Workbench', device,
+        projects: state.projects.map(({ id, name, path }) => ({ id, name, path })),
         chats: state.chats.filter(c => c.tool !== 'shell').map(c => ({ id: c.id, projectId: c.projectId, name: c.title, tool: c.tool,
           status: panes.get(c.id)?.view.status === 'running' ? panes.get(c.id).view.agent.state : (panes.get(c.id)?.view.status ?? 'closed'),
           output: panes.get(c.id)?.view.transcript()?.slice(-8000) ?? '', replyPrompt: replyPrompts.current(c.id, panes.get(c.id)?.view) })),

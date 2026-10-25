@@ -1,6 +1,6 @@
 # Workbench Companion for Android
 
-Native Android companion for AI Workbench. Version 0.3.2 adds explicit replies to current approval/menu prompts (requires desktop 0.2.18), queued-work reasons and cancellation; built-in remote access requires desktop Workbench 0.2.16 or later for that mode. LAN mode remains compatible with 0.2.15.
+Native Android companion for AI Workbench. Version 0.4.0 uses **Computers → Projects → Chats → Conversation**, preserves context with breadcrumbs, handles system Back within the app, and keeps the composer fixed below terminal output. Desktop Workbench 0.2.19 is recommended; replies to approval/menu prompts require 0.2.18 or later. LAN pairing remains compatible with 0.2.15.
 
 ## Built-in remote access
 

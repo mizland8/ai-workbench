@@ -13,7 +13,6 @@ import android.view.View;
 import android.view.WindowInsets;
 import android.widget.*;
 import org.json.*;
-import java.text.DateFormat;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -24,8 +23,14 @@ public class MainActivity extends Activity {
         INK=Color.rgb(239,245,239), MUTED=Color.rgb(156,172,164), GREEN=Color.rgb(165,243,194);
     private SharedPreferences prefs;
     private JSONArray pcs=new JSONArray(), drafts=new JSONArray();
-    private LinearLayout root, content, nav;
-    private String tab="Overview";
+    private LinearLayout root, content;
+    private ScrollView pageScroll;
+    private String renderedPage;
+    private final Map<String,Integer> scrollPositions=new HashMap<>();
+    private TextView locationLabel;
+    private final Map<String,String> computerHosts=new HashMap<>();
+    private static final String INDIVIDUAL="__individual__";
+    private String tab="Computers";
     private boolean draftFilter=false;
     private LinkClient links;
     private final ExecutorService network=Executors.newCachedThreadPool();
@@ -33,13 +38,13 @@ public class MainActivity extends Activity {
     private final Map<String,String> connectionStates=new HashMap<>();
     private volatile int watchGeneration=0;
     private String selectedPc=null,selectedChat=null,selectedProject=null;
-    private TextView liveOutput,liveStatus,liveReceipt,liveSend,liveQueueState,discardQueued;
+    private TextView liveOutput,liveStatus,liveReceipt,liveSend,liveQueueState,discardQueued,liveTitle;
     private String lastMessageId;
     private EditText messageInput;
     private JSONObject retryMessage;
     private int dialogs=0;
     @Override protected void onStart(){super.onStart();startWatches();}
-    @Override protected void onStop(){watchGeneration++;super.onStop();}
+    @Override protected void onStop(){saveComposerDraft();watchGeneration++;super.onStop();}
     @Override protected void onDestroy(){network.shutdownNow();super.onDestroy();}
     private void startWatches(){
         int generation=++watchGeneration;
@@ -68,15 +73,21 @@ public class MainActivity extends Activity {
         prefs=getSharedPreferences("workbench", MODE_PRIVATE);
         try { pcs=new JSONArray(prefs.getString("pcs","[]")); drafts=new JSONArray(prefs.getString("drafts","[]")); }
         catch(JSONException e) { Toast.makeText(this,"Saved data could not be read.",Toast.LENGTH_LONG).show(); }
-        if(!prefs.contains("pcs")) {
-            for(int i=1;i<=3;i++) pcs.put(object("id",UUID.randomUUID().toString(),"name","PC "+i,"note",""));
-            save();
+        if(!prefs.contains("pcs"))save();
+        // Remove only unused preview slots; preserve linked computers, custom entries and drafts.
+        if(!prefs.getBoolean("hierarchy-ui",false)){
+            for(int i=pcs.length()-1;i>=0;i--){JSONObject pc=pcs.optJSONObject(i);boolean used=false;
+                for(int j=0;j<drafts.length();j++)if(pc.optString("id").equals(drafts.optJSONObject(j).optString("pcId")))used=true;
+                if(pc.optString("name").matches("PC [1-3]")&&pc.optString("note").isEmpty()&&!links.linked(pc.optString("id"))&&!used)pcs.remove(i);
+            }save();prefs.edit().putBoolean("hierarchy-ui",true).apply();
         }
-        if(state!=null) {tab=state.getString("tab","Overview"); draftFilter=state.getBoolean("draftFilter",false);selectedPc=state.getString("selectedPc");selectedChat=state.getString("selectedChat");selectedProject=state.getString("selectedProject");}
+        for(int i=0;i<pcs.length();i++)try{JSONObject pc=pcs.optJSONObject(i),descriptor=links.load(pc.optString("id"));if(descriptor!=null)computerHosts.put(pc.optString("id"),descriptor.optString("host"));}catch(Exception ignored){}
+        if(android.os.Build.VERSION.SDK_INT>=33)getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,this::goBack);
+        if(state!=null) {tab=state.getString("tab","Computers"); draftFilter=state.getBoolean("draftFilter",false);selectedPc=state.getString("selectedPc");selectedChat=state.getString("selectedChat");selectedProject=state.getString("selectedProject");}
         render();
     }
     @Override protected void onSaveInstanceState(Bundle out) {
-        super.onSaveInstanceState(out); out.putString("tab",tab); out.putBoolean("draftFilter",draftFilter);out.putString("selectedPc",selectedPc);out.putString("selectedChat",selectedChat);out.putString("selectedProject",selectedProject);
+        saveComposerDraft();super.onSaveInstanceState(out); out.putString("tab",tab); out.putBoolean("draftFilter",draftFilter);out.putString("selectedPc",selectedPc);out.putString("selectedChat",selectedChat);out.putString("selectedProject",selectedProject);
     }
     private JSONObject object(String... pairs) {
         JSONObject o=new JSONObject();
@@ -111,114 +122,109 @@ public class MainActivity extends Activity {
         content.addView(text(title,32,INK,true));space(content,8);content.addView(text(desc,14,MUTED,false));space(content,24);
     }
     private void section(String name){space(content,10);content.addView(text(name,18,INK,true));space(content,12);}
-    private String pcName(String id){for(int i=0;i<pcs.length();i++)if(pcs.optJSONObject(i).optString("id").equals(id))return pcs.optJSONObject(i).optString("name");return "Removed computer";}
-
+    private String pcName(String id){
+        for(int i=0;i<pcs.length();i++){JSONObject pc=pcs.optJSONObject(i);if(!pc.optString("id").equals(id))continue;
+            String alias=pc.optString("name");if(!alias.isEmpty()&&!alias.matches("PC [1-3]"))return alias;
+            JSONObject snapshot=snapshots.get(id),device=snapshot==null?null:snapshot.optJSONObject("device");
+            if(device!=null&&!device.optString("name").isEmpty())return device.optString("name");
+            String host=computerHosts.get(id);return host==null?(alias.isEmpty()?"New computer":alias):"Computer at "+host;
+        }return "Removed computer";
+    }
+    private String projectName(){
+        if(INDIVIDUAL.equals(selectedProject))return "Individual chats";
+        JSONObject snapshot=snapshots.get(selectedPc);JSONArray projects=snapshot==null?null:snapshot.optJSONArray("projects");
+        if(projects!=null)for(int i=0;i<projects.length();i++)if(projects.optJSONObject(i).optString("id").equals(selectedProject))return projects.optJSONObject(i).optString("name");
+        return "Projects";
+    }
+    private String location(){return selectedPc==null?"Computers":pcName(selectedPc)+(selectedProject==null?"":"  ›  "+projectName());}
+    private void saveComposerDraft(){if(messageInput!=null&&selectedChat!=null&&prefs!=null)prefs.edit().putString("input."+selectedPc+"."+selectedChat,messageInput.getText().toString()).apply();}
+    private void openComputer(String id){saveComposerDraft();selectedPc=id;selectedProject=null;selectedChat=null;draftFilter=false;retryMessage=null;tab="Projects";render();}
+    private void openProject(String id){saveComposerDraft();selectedProject=id;selectedChat=null;draftFilter=false;retryMessage=null;tab="Chats";render();}
+    private void openChat(String id){saveComposerDraft();selectedChat=id;retryMessage=null;lastMessageId=null;render();}
+    private void goBack(){
+        saveComposerDraft();
+        if(draftFilter){draftFilter=false;selectedPc=null;selectedProject=null;selectedChat=null;}
+        else if(selectedChat!=null){selectedChat=null;retryMessage=null;}
+        else if(selectedProject!=null){selectedProject=null;}
+        else if(selectedPc!=null){selectedPc=null;}
+        else{moveTaskToBack(true);return;}
+        render();
+    }
+    @SuppressWarnings("deprecation") @Override public void onBackPressed(){goBack();}
+    private String backLabel(){return selectedChat!=null?"Back to chats":selectedProject!=null?"Back to projects":"Back to computers";}
     private void render(){
-        liveOutput=null;liveStatus=null;liveReceipt=null;liveSend=null;liveQueueState=null;discardQueued=null;
+        if(pageScroll!=null&&renderedPage!=null)scrollPositions.put(renderedPage,pageScroll.getScrollY());
+        renderedPage=(draftFilter?"drafts":String.valueOf(selectedPc)+"/"+selectedProject+"/"+selectedChat);
+        messageInput=null;liveTitle=null;liveOutput=null;liveStatus=null;liveReceipt=null;liveSend=null;liveQueueState=null;discardQueued=null;
         root=vertical();root.setBackgroundColor(BG);setContentView(root);
         root.setOnApplyWindowInsetsListener((v,insets)->{
             android.graphics.Insets bars=insets.getInsets(WindowInsets.Type.systemBars()|WindowInsets.Type.displayCutout()|WindowInsets.Type.ime());
             v.setPadding(bars.left,bars.top,bars.right,bars.bottom);return insets;
         });root.requestApplyInsets();
-        LinearLayout top=new LinearLayout(this);top.setGravity(Gravity.CENTER_VERTICAL);top.setPadding(dp(22),dp(12),dp(16),dp(12));
-        TextView brand=text("W /  WORKBENCH",14,INK,true);top.addView(brand,new LinearLayout.LayoutParams(0,-2,1));
-        TextView info=text("About",13,MUTED,false);info.setPadding(dp(14),dp(10),dp(14),dp(10));info.setOnClickListener(v->about());top.addView(info);root.addView(top);
-        ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);scroll.setClipToPadding(false);
-        content=vertical();content.setPadding(dp(22),dp(14),dp(22),dp(24));scroll.addView(content);
+        LinearLayout top=new LinearLayout(this);top.setGravity(Gravity.CENTER_VERTICAL);top.setPadding(dp(8),dp(6),dp(8),dp(6));
+        if(selectedPc!=null||draftFilter){TextView back=text("‹",30,GREEN,true);back.setGravity(Gravity.CENTER);back.setContentDescription(backLabel());top.addView(back,new LinearLayout.LayoutParams(dp(48),dp(48)));back.setOnClickListener(v->goBack());}
+        LinearLayout title=vertical();title.setPadding(dp(8),0,dp(8),0);title.addView(text("WORKBENCH",10,MUTED,true));
+        locationLabel=text(draftFilter?"Saved drafts":location(),15,INK,true);locationLabel.setMaxLines(2);locationLabel.setEllipsize(android.text.TextUtils.TruncateAt.END);title.addView(locationLabel);
+        top.addView(title,new LinearLayout.LayoutParams(0,-2,1));
+        TextView menu=text("⋯",24,GREEN,true);menu.setGravity(Gravity.CENTER);menu.setContentDescription("More options");top.addView(menu,new LinearLayout.LayoutParams(dp(48),dp(48)));
+        menu.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Workbench").setItems(new String[]{"Saved drafts","Remote connection settings","About"},(d,which)->{if(which==0){saveComposerDraft();draftFilter=true;selectedChat=null;render();}else if(which==1)remoteSettings();else about();}).show());root.addView(top);
+        ScrollView scroll=new ScrollView(this);pageScroll=scroll;scroll.setFillViewport(true);scroll.setClipToPadding(false);
+        content=vertical();content.setPadding(dp(18),dp(12),dp(18),dp(18));scroll.addView(content);
         root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
-        if(selectedChat!=null){liveChat();}else switch(tab){case "Computers":computers();break;case "Projects":projects();break;case "Chats":chats();break;default:overview();}
-        nav=new LinearLayout(this);nav.setPadding(dp(8),dp(8),dp(8),dp(8));nav.setBackground(shape(BG,LINE,0));
-        String[] tabs={"Overview","Computers","Projects","Chats"};String[] icons={"◉","▣","▤","☰"};
-        for(int i=0;i<tabs.length;i++){
-            String name=tabs[i];TextView item=text(icons[i]+"\n"+name,11,name.equals(tab)?GREEN:MUTED,true);item.setGravity(Gravity.CENTER);item.setMinHeight(dp(58));
-            if(name.equals(tab))item.setBackground(shape(CARD,0,14));
-            item.setOnClickListener(v->{tab=name;selectedChat=null;selectedPc=null;selectedProject=null;draftFilter=false;render();});nav.addView(item,new LinearLayout.LayoutParams(0,-2,1));
-        }root.addView(nav);
-    }
-    private void overview(){
-        heading("Your workspace, anywhere","Stay in the loop.","Your computers. Your AI teammates. One place to pick up where you left off.");
-        LinearLayout status=card();status.addView(text("COMPANION / EARLY ACCESS",11,GREEN,true));space(status,12);
-        status.addView(text("Ready for your computers",22,INK,true));space(status,8);
-        status.addView(text("Pair your PCs to see AI usage, read their chats, and send work from your phone.",14,MUTED,false));
-        action(status,"Set up computers  →",true,()->{tab="Computers";render();});
-        LinearLayout counts=card();counts.addView(text(pcs.length()+" computers saved  ·  "+linkedCount()+" linked",17,INK,true));space(counts,8);
-        counts.addView(text(linkedCount()==0?"Pair a computer to see its activity.":"Open Computers to check each connection.",13,MUTED,false));
-        section("AI usage");
-        for(Map.Entry<String,JSONObject> entry:snapshots.entrySet()){
-            JSONObject report=entry.getValue().optJSONObject("usage");if(report==null)continue;
-            JSONArray tools=report.optJSONArray("tools");if(tools==null)continue;
-            for(int i=0;i<tools.length();i++){JSONObject tool=tools.optJSONObject(i);LinearLayout c=card();c.addView(text(pcName(entry.getKey())+" / "+tool.optString("id"),16,INK,true));
-                JSONArray limits=tool.optJSONArray("limits");if(limits==null||limits.length()==0)c.addView(text("No allowance data reported",13,MUTED,false));
-                else for(int j=0;j<limits.length();j++){JSONObject limit=limits.optJSONObject(j);space(c,8);c.addView(text(limit.optString("label")+" · "+Math.round(limit.optDouble("usedPercent"))+"% used",14,GREEN,false));}
-                c.addView(text(connection(entry.getKey())+" · updated "+new Date(report.optLong("generatedAt")).toString(),11,MUTED,false));
-            }
-        }
-        if(snapshots.isEmpty())for(String tool:new String[]{"Claude","Codex","Other agents"}){
-            LinearLayout c=card();c.addView(text(tool,16,INK,true));space(c,6);c.addView(text("—   Awaiting a linked PC",14,MUTED,false));
-        }
-        section("Pick up a thought");LinearLayout c=card();c.addView(text(drafts.length()+" saved message drafts",18,INK,true));space(c,6);
-        c.addView(text("Write instructions now and keep them on this phone. Drafts are never sent automatically.",14,MUTED,false));
-        action(c,"Write a draft",true,()->editDraft(null));
-        if(drafts.length()>0)action(c,"View drafts",false,()->{tab="Chats";draftFilter=true;render();});
+        if(draftFilter)draftsScreen();else if(selectedChat!=null)liveChat();else if(selectedPc==null)computers();else if(selectedProject==null)projects();else chats();
+        final int savedScroll=scrollPositions.getOrDefault(renderedPage,0);scroll.post(()->scroll.scrollTo(0,savedScroll));
     }
     private void computers(){
-        heading("Your fleet","Computers","Pair each PC using its Computers & phone menu in AI Workbench.");
-        LinearLayout remote=card();remote.addView(text("Remote access from anywhere",21,INK,true));space(remote,8);
-        remote.addView(text(RemoteNetwork.enabled(this)?"Built-in networking enabled. Sign into the same Tailscale account as your PCs.":"Connect over mobile data or other Wi-Fi without a separate VPN app.",14,MUTED,false));
-        action(remote,"Remote connection settings",true,()->remoteSettings());
+        heading("Choose a computer","Computers","Open a computer to see its projects, then choose an AI chat.");
         for(int i=0;i<pcs.length();i++){
-            JSONObject pc=pcs.optJSONObject(i);LinearLayout c=card();c.addView(text("▣  "+pc.optString("name"),21,INK,true));space(c,8);
-            c.addView(text("○  "+connection(pc.optString("id")),13,MUTED,true));space(c,8);
-            c.addView(text(pc.optString("note").isEmpty()?"Add a note to identify this computer.":pc.optString("note"),14,MUTED,false));
-            action(c,"Edit computer",false,()->editPc(pc));
-            if(!links.linked(pc.optString("id")))action(c,"Link computer",true,()->pairPc(pc));
-            else{action(c,"Update pairing code",false,()->pairPc(pc));action(c,"Browse chats",true,()->{selectedPc=pc.optString("id");selectedProject=null;tab="Chats";draftFilter=false;render();});
-                action(c,"Unlink on this phone",false,()->new AlertDialog.Builder(this).setTitle("Unlink computer?").setMessage("Also revoke this phone in the PC’s Computers menu if you want to invalidate its credential.").setNegativeButton("Cancel",null).setPositiveButton("Unlink",(a,w)->{String id=pc.optString("id");links.forget(id);snapshots.remove(id);connectionStates.remove(id);startWatches();render();}).show());}
+            JSONObject pc=pcs.optJSONObject(i);String id=pc.optString("id");JSONObject snapshot=snapshots.get(id),device=snapshot==null?null:snapshot.optJSONObject("device");
+            LinearLayout c=card();c.addView(text(pcName(id),22,INK,true));space(c,8);
+            String platform=device==null?"":device.optString("platform"),host=computerHosts.getOrDefault(id,"");
+            if("macos".equals(platform))platform="macOS";else if("windows".equals(platform))platform="Windows";else if("linux".equals(platform))platform="Linux";
+            if(!platform.isEmpty()||!host.isEmpty())c.addView(text((platform.isEmpty()?"":platform+" · ")+host,12,MUTED,false));
+            c.addView(text(connection(id),13,"Connected".equals(connection(id))?GREEN:MUTED,true));
+            if(!pc.optString("note").isEmpty()){space(c,6);c.addView(text(pc.optString("note"),14,MUTED,false));}
+            if(snapshot!=null)c.addView(text(snapshot.optJSONArray("projects").length()+" projects · "+snapshot.optJSONArray("chats").length()+" chats",13,MUTED,false));
+            if(links.linked(id))action(c,"Open projects",true,()->openComputer(id));else action(c,"Link computer",true,()->pairPc(pc));
+            action(c,"Manage "+pcName(id),false,()->new AlertDialog.Builder(this).setTitle(pcName(id)).setItems(new String[]{"Rename or edit computer","Update pairing code","Unlink on this phone"},(d,which)->{
+                if(which==0)editPc(pc);else if(which==1)pairPc(pc);else new AlertDialog.Builder(this).setTitle("Unlink "+pcName(id)+"?").setMessage("This phone will stop connecting. You can also revoke its credential in Workbench on that computer.").setNegativeButton("Cancel",null).setPositiveButton("Unlink",(x,y)->{links.forget(id);snapshots.remove(id);connectionStates.remove(id);startWatches();render();}).show();
+            }).show());
         }
+        if(pcs.length()==0){LinearLayout c=card();c.addView(text("Add your first computer",21,INK,true));space(c,8);c.addView(text("Give each machine a clear name, such as Home PC or MacBook, then paste its Workbench pairing code.",14,MUTED,false));}
         action(content,"+ Add computer",true,()->editPc(null));
-        section("Connection");content.addView(text("For remote access, enable the built-in connection here and on each PC, sign into the same Tailscale account, and use the PC’s remote pairing code. LAN pairing still works on the same Wi-Fi. Keep Workbench open and the PCs awake.",14,MUTED,false));
+        action(content,"Remote connection settings",false,()->remoteSettings());
     }
+    private JSONArray currentChats(){JSONObject snapshot=snapshots.get(selectedPc);return snapshot==null?new JSONArray():snapshot.optJSONArray("chats")==null?new JSONArray():snapshot.optJSONArray("chats");}
+    private boolean inProject(JSONObject chat,String project){return INDIVIDUAL.equals(project)?chat.isNull("projectId")||chat.optString("projectId").isEmpty():project.equals(chat.optString("projectId"));}
     private void projects(){
-        heading("Across your computers","Projects","Projects from your linked computers.");
-        boolean any=false;
-        for(Map.Entry<String,JSONObject> entry:snapshots.entrySet()){
-            JSONArray projects=entry.getValue().optJSONArray("projects");if(projects==null)continue;
-            for(int i=0;i<projects.length();i++){any=true;JSONObject project=projects.optJSONObject(i);LinearLayout row=card();row.addView(text(project.optString("name"),20,INK,true));row.addView(text(pcName(entry.getKey())+" · "+connection(entry.getKey()),13,MUTED,false));
-                action(row,"View chats",false,()->{selectedPc=entry.getKey();selectedProject=project.optString("id");tab="Chats";draftFilter=false;render();});}
+        heading(pcName(selectedPc),"Projects",connection(selectedPc)+" · Choose a project on this computer.");
+        JSONObject snapshot=snapshots.get(selectedPc);JSONArray projects=snapshot==null?new JSONArray():snapshot.optJSONArray("projects");JSONArray chats=currentChats();
+        if(projects==null)projects=new JSONArray();
+        for(int i=0;i<projects.length();i++){
+            JSONObject project=projects.optJSONObject(i);String id=project.optString("id");int count=0;for(int j=0;j<chats.length();j++)if(inProject(chats.optJSONObject(j),id))count++;
+            LinearLayout row=card();row.addView(text(project.optString("name"),21,INK,true));space(row,6);
+            if(!project.optString("path").isEmpty())row.addView(text(project.optString("path"),12,MUTED,false));
+            row.addView(text(count+" AI chat(s)",13,MUTED,false));action(row,"Open chats",true,()->openProject(id));
         }
-        if(any)return;
-        LinearLayout c=card();c.addView(text("▤",36,GREEN,true));space(c,14);c.addView(text("No synced projects yet",22,INK,true));space(c,8);
-        c.addView(text("Projects belong to a computer. Link one to browse its folders and AI chats from your phone.",14,MUTED,false));
-        action(c,"View computers",true,()->{tab="Computers";render();});
-        section("Plan your next task");content.addView(text("You can save a message draft with a project and chat name while linking is being built.",14,MUTED,false));
-        action(content,"Write a draft",false,()->editDraft(null));
+        int individual=0;for(int i=0;i<chats.length();i++)if(inProject(chats.optJSONObject(i),INDIVIDUAL))individual++;
+        if(individual>0){LinearLayout c=card();c.addView(text("Individual chats",21,INK,true));space(c,6);c.addView(text(individual+" chats without a project on "+pcName(selectedPc),13,MUTED,false));action(c,"Open individual chats",false,()->openProject(INDIVIDUAL));}
+        if(projects.length()==0&&individual==0){LinearLayout c=card();c.addView(text(snapshot==null?"Waiting for this computer":"No projects on this computer",20,INK,true));space(c,8);c.addView(text("Keep Workbench open on "+pcName(selectedPc)+". "+connection(selectedPc),14,MUTED,false));}
     }
     private void chats(){
-        heading("Conversations","Chats & drafts","Read your AI chats, send work, and keep local drafts.");
-        LinearLayout filters=new LinearLayout(this);
-        for(String label:new String[]{"Live chats","Drafts ("+drafts.length()+")"}){
-            boolean isDraft=label.startsWith("Drafts");TextView b=text(label,14,isDraft==draftFilter?BG:MUTED,true);b.setGravity(Gravity.CENTER);b.setPadding(dp(14),dp(12),dp(14),dp(12));b.setBackground(shape(isDraft==draftFilter?GREEN:CARD,0,12));
-            LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,-2,1);p.setMargins(0,0,dp(6),dp(16));filters.addView(b,p);b.setOnClickListener(v->{draftFilter=isDraft;render();});
-        }content.addView(filters);
-        if(!draftFilter){
-            boolean any=false;
-            for(Map.Entry<String,JSONObject> entry:snapshots.entrySet()){
-                if(selectedPc!=null&&!selectedPc.equals(entry.getKey()))continue;
-                JSONArray chats=entry.getValue().optJSONArray("chats");if(chats==null)continue;
-                for(int i=0;i<chats.length();i++){any=true;JSONObject chat=chats.optJSONObject(i);if(selectedProject!=null&&!selectedProject.equals(chat.optString("projectId")))continue;LinearLayout row=card();row.addView(text(chat.optString("name"),20,INK,true));space(row,6);row.addView(text(pcName(entry.getKey())+" / "+chat.optString("tool")+" · "+chat.optString("status"),13,MUTED,false));action(row,"Open chat",true,()->{selectedPc=entry.getKey();selectedChat=chat.optString("id");retryMessage=null;render();});}
-            }
-            if(any){action(content,"Show all computers",false,()->{selectedPc=null;selectedProject=null;render();});return;}
-            LinearLayout c=card();c.addView(text("No live chats",22,INK,true));space(c,8);c.addView(text("Link a computer to view its chats and send work. Busy agents receive messages when they are ready.",14,MUTED,false));action(c,"View computers",true,()->{tab="Computers";render();});}
-        else if(drafts.length()==0){LinearLayout c=card();c.addView(text("A place for your next idea",20,INK,true));space(c,8);c.addView(text("Save a task now. It stays on your phone until you choose what to do with it.",14,MUTED,false));}
-        else for(int i=drafts.length()-1;i>=0;i--){
-            JSONObject d=drafts.optJSONObject(i);LinearLayout c=card();
-            c.addView(text("DRAFT · NOT SENT",10,GREEN,true));space(c,8);
-            c.addView(text(pcName(d.optString("pcId"))+" / "+d.optString("chat","Unassigned chat"),16,INK,true));space(c,6);
-            if(!d.optString("project").isEmpty()){c.addView(text(d.optString("project"),12,MUTED,false));space(c,6);}
-            TextView body=text(d.optString("body"),15,INK,false);body.setMaxLines(5);c.addView(body);space(c,8);
-            c.addView(text(DateFormat.getDateTimeInstance(DateFormat.SHORT,DateFormat.SHORT).format(new Date(d.optLong("updated"))),11,MUTED,false));
-            action(c,"Open draft",false,()->editDraft(d));
+        heading(pcName(selectedPc)+" › "+projectName(),"Chats","Choose a conversation in this project.");
+        JSONArray chats=currentChats();int count=0;
+        for(int i=0;i<chats.length();i++){
+            JSONObject chat=chats.optJSONObject(i);if(!inProject(chat,selectedProject))continue;count++;
+            LinearLayout row=card();row.addView(text(chat.optString("name"),21,INK,true));space(row,6);
+            row.addView(text(chat.optString("tool").toUpperCase(Locale.ROOT)+" · "+chat.optString("status")+" · "+chat.optString("id").substring(0,Math.min(8,chat.optString("id").length())),12,MUTED,false));
+            action(row,"Open conversation",true,()->openChat(chat.optString("id")));
         }
+        if(count==0){LinearLayout c=card();c.addView(text("No chats in this project",20,INK,true));space(c,8);c.addView(text("Start an AI chat in this project in Workbench on "+pcName(selectedPc)+".",14,MUTED,false));}
+    }
+    private void draftsScreen(){
+        heading("Saved on this phone","Drafts","These drafts have not been sent to an AI.");
+        if(drafts.length()==0){LinearLayout c=card();c.addView(text("No saved drafts",21,INK,true));}
+        for(int i=drafts.length()-1;i>=0;i--){JSONObject d=drafts.optJSONObject(i);LinearLayout c=card();c.addView(text(pcName(d.optString("pcId"))+" › "+d.optString("project","Individual chats"),13,GREEN,true));space(c,6);c.addView(text(d.optString("chat","Unassigned chat"),20,INK,true));TextView body=text(d.optString("body"),14,MUTED,false);body.setMaxLines(4);c.addView(body);action(c,"Edit draft",false,()->editDraft(d));}
         action(content,"+ Write a draft",true,()->editDraft(null));
     }
     private EditText input(LinearLayout box,String label,String value,boolean multiline){
@@ -276,38 +282,45 @@ public class MainActivity extends Activity {
         AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Link "+pc.optString("name")).setView(box).setNegativeButton("Cancel",null).setPositiveButton("Pair",null).create();
         dialogs++;dialog.setOnDismissListener(d->dialogs--);
         dialog.setOnShowListener(d->dialog.getButton(-1).setOnClickListener(v->{String value=code.getText().toString().trim();dialog.getButton(-1).setEnabled(false);
-            network.execute(()->{try{JSONObject descriptor=links.pair(value,"Pixel / Workbench Companion");links.save(pc.optString("id"),descriptor);runOnUiThread(()->{dialog.dismiss();startWatches();render();});}
+            network.execute(()->{try{JSONObject descriptor=links.pair(value,"Pixel / Workbench Companion");links.save(pc.optString("id"),descriptor);runOnUiThread(()->{computerHosts.put(pc.optString("id"),descriptor.optString("host"));dialog.dismiss();startWatches();render();});}
             catch(Exception e){runOnUiThread(()->{code.setError(e.getMessage());dialog.getButton(-1).setEnabled(true);});}});
         }));dialog.show();
     }
     private JSONObject currentChat(){JSONObject snapshot=snapshots.get(selectedPc);JSONArray chats=snapshot==null?null:snapshot.optJSONArray("chats");if(chats!=null)for(int i=0;i<chats.length();i++)if(chats.optJSONObject(i).optString("id").equals(selectedChat))return chats.optJSONObject(i);return null;}
     private void refreshLiveChat(){
-        if(liveOutput==null)return;JSONObject chat=currentChat();liveOutput.setText(chat==null?"Waiting for chat output…":chat.optString("output","No output yet"));
+        if(liveOutput==null)return;JSONObject chat=currentChat();
+        if(chat!=null&&selectedProject==null)selectedProject=chat.isNull("projectId")?INDIVIDUAL:chat.optString("projectId",INDIVIDUAL);
+        if(locationLabel!=null)locationLabel.setText(location());if(liveTitle!=null)liveTitle.setText(chat==null?"Conversation":chat.optString("tool").toUpperCase(Locale.ROOT)+" · "+chat.optString("name"));liveOutput.setText(chat==null?"Waiting for chat output…":chat.optString("output","No output yet"));
         JSONObject prompt=chat==null?null:chat.optJSONObject("replyPrompt");
         if(liveStatus!=null)liveStatus.setText(connection(selectedPc)+(prompt!=null?" · Waiting for your reply":chat==null?"":" · "+chat.optString("status")));
-        if(liveSend!=null){liveSend.setText(prompt==null?"Send work":"Reply to current prompt");liveSend.setTag(prompt==null?"":prompt.optString("id"));}
+        if(liveSend!=null){liveSend.setText(prompt==null?"Send work":"Send reply");liveSend.setTag(prompt==null?"":prompt.optString("id"));}
         JSONObject snapshot=snapshots.get(selectedPc);JSONArray receipts=snapshot==null?null:snapshot.optJSONArray("receipts");
         int queued=0;String reason="";
         if(receipts!=null)for(int i=0;i<receipts.length();i++){JSONObject r=receipts.optJSONObject(i);if(selectedChat.equals(r.optString("chatId"))&&"queued".equals(r.optString("status"))){queued++;reason=r.optString("reason");}}
-        if(liveQueueState!=null)liveQueueState.setText(queued>0?queued+" work message(s) queued. "+reason:prompt!=null?"Read the question above, enter your answer, then tap Reply to current prompt. A reply is sent once to this question only.":"Messages wait while the AI is busy or needs your approval.");
+        if(liveQueueState!=null)liveQueueState.setText(queued>0?queued+" work message(s) queued. "+reason:prompt!=null?"Read the question above, enter your answer, then tap Send reply. A reply is sent once to this question only.":"Messages wait while the AI is busy or needs your approval.");
         if(discardQueued!=null)discardQueued.setVisibility(queued>0?View.VISIBLE:View.GONE);
-        if(receipts!=null&&liveReceipt!=null&&lastMessageId!=null)for(int i=0;i<receipts.length();i++){JSONObject r=receipts.optJSONObject(i);if(lastMessageId.equals(r.optString("id"))&&selectedChat.equals(r.optString("chatId")))liveReceipt.setText("Receipt: "+r.optString("status")+" · "+lastMessageId+" · "+r.optString("error",r.optString("reason","")));}
+        if(receipts!=null&&liveReceipt!=null&&lastMessageId!=null)for(int i=0;i<receipts.length();i++){JSONObject r=receipts.optJSONObject(i);if(lastMessageId.equals(r.optString("id"))&&selectedChat.equals(r.optString("chatId")))liveReceipt.setText(("reply".equals(r.optString("kind"))?"Reply ":"Work ")+r.optString("status")+(r.has("error")?" · "+r.optString("error"):""));}
     }
     private void liveChat(){
-        JSONObject chat=currentChat();heading(pcName(selectedPc),chat==null?"AI chat":chat.optString("name"),"Read the latest terminal output and send work to this chat.");
+        JSONObject chat=currentChat();liveTitle=text(chat==null?"Conversation":chat.optString("tool").toUpperCase(Locale.ROOT)+" · "+chat.optString("name"),22,INK,true);content.addView(liveTitle);space(content,6);
         liveStatus=text(connection(selectedPc),13,GREEN,true);content.addView(liveStatus);space(content,12);
         LinearLayout output=card();liveOutput=text("",12,INK,false);liveOutput.setTypeface(Typeface.MONOSPACE);liveOutput.setTextIsSelectable(true);output.addView(liveOutput);refreshLiveChat();
         String outgoingKey="outgoing."+selectedPc+"."+selectedChat;
         try{String saved=prefs.getString(outgoingKey,null);retryMessage=saved==null?null:new JSONObject(saved);}catch(JSONException e){retryMessage=null;}
-        messageInput=input(content,"Message",retryMessage==null?"":retryMessage.optString("text"),true);
-        liveQueueState=text("",13,MUTED,false);content.addView(liveQueueState);
-        TextView receipt=text("",13,MUTED,false);content.addView(receipt);liveReceipt=receipt;
-        discardQueued=action(content,"Discard queued work for this chat",false,()->{
+        LinearLayout composer=vertical();composer.setPadding(dp(16),dp(8),dp(16),dp(8));composer.setBackground(shape(CARD,LINE,0));root.addView(composer);
+        liveQueueState=text("",11,MUTED,false);liveQueueState.setMaxLines(2);composer.addView(liveQueueState);
+        LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);composer.addView(row);
+        messageInput=new EditText(this);messageInput.setTextColor(INK);messageInput.setHintTextColor(MUTED);messageInput.setHint("Message this chat");messageInput.setContentDescription("Message this chat");messageInput.setTextSize(15);messageInput.setMinLines(1);messageInput.setMaxLines(3);messageInput.setGravity(Gravity.TOP);messageInput.setPadding(dp(10),dp(10),dp(10),dp(10));messageInput.setBackground(shape(BG,LINE,10));messageInput.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE|InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        String inputKey="input."+selectedPc+"."+selectedChat;
+        messageInput.setText(retryMessage==null?prefs.getString(inputKey,""):retryMessage.optString("text"));row.addView(messageInput,new LinearLayout.LayoutParams(0,-2,1));
+        messageInput.addTextChangedListener(new android.text.TextWatcher(){public void beforeTextChanged(CharSequence t,int st,int count,int after){}public void onTextChanged(CharSequence t,int st,int before,int count){prefs.edit().putString(inputKey,t.toString()).apply();}public void afterTextChanged(android.text.Editable t){}});
+        TextView receipt=text("",11,MUTED,false);receipt.setMaxLines(2);composer.addView(receipt);liveReceipt=receipt;
+        discardQueued=action(composer,"Discard queued work for this chat",false,()->{
             String pcId=selectedPc,chatId=selectedChat;discardQueued.setEnabled(false);
             network.execute(()->{try{JSONObject result=links.request(links.load(pcId),"message",new JSONObject().put("kind","cancel").put("chatId",chatId));runOnUiThread(()->{receipt.setText("Cancelled "+result.optInt("count")+" queued message(s).");if(discardQueued!=null)discardQueued.setEnabled(true);});}
             catch(Exception e){runOnUiThread(()->{receipt.setText(e.getMessage());if(discardQueued!=null)discardQueued.setEnabled(true);});}});
         });
-        TextView send=action(content,"Send work",true,()->{});liveSend=send;
+        TextView send=text("Send work",12,BG,true);send.setGravity(Gravity.CENTER);send.setMaxLines(2);send.setMinHeight(dp(48));send.setPadding(dp(8),dp(8),dp(8),dp(8));send.setBackground(shape(GREEN,0,10));LinearLayout.LayoutParams sendParams=new LinearLayout.LayoutParams(dp(104),-2);sendParams.leftMargin=dp(8);row.addView(send,sendParams);liveSend=send;
         send.setOnClickListener(v->{String message=messageInput.getText().toString().trim();if(message.isEmpty()){messageInput.setError("Write instructions first");return;}
             String promptId=String.valueOf(send.getTag());
             try{if(retryMessage==null||!message.equals(retryMessage.optString("text"))){
@@ -317,15 +330,15 @@ public class MainActivity extends Activity {
             catch(JSONException ignored){return;}
             JSONObject request=retryMessage;lastMessageId=request.optString("id");
             if(!prefs.edit().putString(outgoingKey,request.toString()).commit()){receipt.setText("Could not save message retry state; nothing sent.");return;}
-            String pcId=selectedPc;send.setEnabled(false);receipt.setText("Sending…");
+            String pcId=selectedPc;final EditText sentInput=messageInput;send.setEnabled(false);receipt.setText("Sending…");
             network.execute(()->{try{JSONObject descriptor=links.load(pcId);if(descriptor==null)throw new Exception("Pair this computer first");JSONObject result=links.request(descriptor,"message",request);
-                runOnUiThread(()->{receipt.setText(("reply".equals(request.optString("kind"))?"Reply: ":"Receipt: ")+result.optString("status")+" · "+result.optString("id"));messageInput.setText("");retryMessage=null;prefs.edit().remove(outgoingKey).apply();send.setEnabled(true);});}
+                runOnUiThread(()->{receipt.setText("reply".equals(request.optString("kind"))?"Reply sent to this prompt":"Work "+result.optString("status"));sentInput.setText("");if(pcId.equals(selectedPc)&&request.optString("chatId").equals(selectedChat))retryMessage=null;prefs.edit().remove(outgoingKey).apply();send.setEnabled(true);});}
                 catch(Exception e){runOnUiThread(()->{boolean changed="reply".equals(request.optString("kind"))&&e.getMessage()!=null&&e.getMessage().toLowerCase(java.util.Locale.ROOT).contains("prompt changed");
-                    if(changed){retryMessage=null;prefs.edit().remove(outgoingKey).apply();}
+                    if(changed){if(pcId.equals(selectedPc)&&request.optString("chatId").equals(selectedChat))retryMessage=null;prefs.edit().remove(outgoingKey).apply();}
                     receipt.setText(e.getMessage()+(changed?" Read the current question before sending again.":". Retry keeps the same message ID."));send.setEnabled(true);});}
             });
         });
-        action(content,"Back to chats",false,()->{selectedChat=null;render();});refreshLiveChat();
+        refreshLiveChat();
     }
     private void remoteSettings(){
         LinearLayout box=dialogBox();box.addView(text("Uses Tailscale’s free personal account for your own devices. Workbench pairing still controls access to projects and chats. Only this app’s traffic uses the connection.",14,MUTED,false));space(box,12);
@@ -378,5 +391,5 @@ public class MainActivity extends Activity {
         android.os.Handler handler=new android.os.Handler(android.os.Looper.getMainLooper());Runnable timer=new Runnable(){public void run(){if(open[0]){refresh.run();handler.postDelayed(this,2000);}}};
         dialog.setOnDismissListener(d->{open[0]=false;handler.removeCallbacks(timer);dialogs--;startWatches();render();});dialog.show();timer.run();
     }
-    private void about(){new AlertDialog.Builder(this).setTitle("Workbench Companion 0.3.0").setMessage("Pair with AI Workbench to view projects, chats, and available usage, and send queued messages. Connections use HTTPS pinned to the PC certificate. Pairing credentials are encrypted with Android Keystore.\n\nKeep the PC awake and Workbench open. Local drafts never send automatically. Usage depends on what each AI reports.").setPositiveButton("Got it",null).show();}
+    private void about(){new AlertDialog.Builder(this).setTitle("Workbench Companion 0.4.0").setMessage("Pair with AI Workbench to view projects, chats, and available usage, and send queued messages. Connections use HTTPS pinned to the PC certificate. Pairing credentials are encrypted with Android Keystore.\n\nKeep the PC awake and Workbench open. Local drafts never send automatically. Usage depends on what each AI reports.").setPositiveButton("Got it",null).show();}
 }

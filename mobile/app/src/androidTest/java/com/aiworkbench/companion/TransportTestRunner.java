@@ -14,6 +14,7 @@ public class TransportTestRunner extends Instrumentation {
     private void require(boolean condition,String reason)throws Exception{if(!condition)throw new Exception(reason);}
     @Override public void onStart(){
         if("network".equals(mode)){testNetwork();return;}
+        if("navigation".equals(mode)){Bundle result=new Bundle();try{new NavigationChecks(this).run();result.putString("stream","PASS: Computers → Projects → Chats → Conversation; system Back preserves activity and context; drafts survive; composer stays visible; computers are isolated\n");finish(-1,result);}catch(Throwable e){result.putString("stream","FAIL: "+e.toString()+"\n");finish(0,result);}return;}
         Bundle results=new Bundle();String id="transport-test-"+UUID.randomUUID();LinkClient client=new LinkClient(getTargetContext());
         try{
             ParcelFileDescriptor file=getUiAutomation().executeShellCommand("cat /data/local/tmp/aiw-companion-test-pairing.json");
