@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Read, Write},
-    net::{TcpListener, TcpStream},
+    net::{Ipv4Addr, TcpListener, TcpStream, UdpSocket},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -158,6 +158,24 @@ impl Companion {
         }
     }
 }
+// Enumerate real LAN adapters; never suggest a VPN or container address for Wi-Fi pairing.
+fn lan_addresses() -> Vec<Ipv4Addr> {
+    let mut addresses: Vec<_> = if_addrs::get_if_addrs().unwrap_or_default().into_iter()
+        .filter(|i| !["docker", "veth", "br-", "virbr", "tailscale", "tun", "utun", "wg", "zt"].iter().any(|prefix| i.name.to_lowercase().starts_with(prefix)))
+        .filter_map(|i| match i.ip() { std::net::IpAddr::V4(ip) if ip.is_private() => Some(ip), _ => None })
+        .collect();
+    addresses.sort();
+    addresses.dedup();
+    // A UDP connect only asks the OS for its preferred source address; it sends no packet.
+    let preferred = UdpSocket::bind("0.0.0.0:0").and_then(|s| {
+        s.connect("192.168.0.1:9")?;
+        s.local_addr()
+    }).ok().and_then(|a| match a.ip() { std::net::IpAddr::V4(ip) => Some(ip), _ => None });
+    if let Some(index) = addresses.iter().position(|ip| Some(*ip) == preferred) {
+        addresses.swap(0, index);
+    }
+    addresses
+}
 #[tauri::command]
 pub fn companion_status(companion: State<'_, Companion>) -> Value {
     let clients = companion
@@ -174,7 +192,7 @@ pub fn companion_status(companion: State<'_, Companion>) -> Value {
         })
         .unwrap_or_default();
     let port = companion.runtime.lock().unwrap().as_ref().map(|r| r.port);
-    json!({"enabled":companion.inner.enabled.load(Ordering::SeqCst),"port":port,"clients":clients})
+    json!({"enabled":companion.inner.enabled.load(Ordering::SeqCst),"port":port,"clients":clients,"addresses":lan_addresses()})
 }
 #[tauri::command]
 pub fn companion_enable(
@@ -253,7 +271,11 @@ pub(crate) fn pairing(companion: &Companion, host: &str) -> Result<Value, String
     if !companion.inner.enabled.load(Ordering::SeqCst) {
         return Err("Enable linking first".into());
     }
-    let host = host.trim();
+    let detected;
+    let host = if host.trim().is_empty() {
+        detected = lan_addresses().first().ok_or("No local Wi-Fi or Ethernet address found. Connect this PC to Wi-Fi, or enter its local IP address.")?.to_string();
+        detected.as_str()
+    } else { host.trim() };
     if host.is_empty()
         || !host
             .chars()
@@ -805,8 +827,6 @@ mod tests {
             clients: vec![],
         });
         c.inner.enabled.store(true, Ordering::SeqCst);
-        let code = secret();
-        c.inner.live.lock().unwrap().pairing = Some((code.clone(), Instant::now()));
         c.inner.live.lock().unwrap().snapshot = json!({"projects":[{"id":"fixture-project","name":"Transport test"}],"chats":[{"id":"fixture-chat","name":"Fixture AI","tool":"codex","status":"idle","output":"Ready for a transport test."}],"usage":null,"receipts":[]});
         let inner = c.inner.clone();
         c.inner.live.lock().unwrap().events = Some(Channel::new(move |body| {
@@ -824,11 +844,13 @@ mod tests {
             .unwrap_or("47932".into())
             .parse::<u16>()
             .unwrap();
-        let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+        let listener = TcpListener::bind((std::env::var("AIW_COMPANION_TEST_BIND").unwrap_or("127.0.0.1".into()).as_str(), port)).unwrap();
         listener.set_nonblocking(true).unwrap();
+        *c.runtime.lock().unwrap() = Some(Runtime { stop: Arc::new(AtomicBool::new(false)), thread: std::thread::spawn(|| {}), port });
+        let host = std::env::var("AIW_COMPANION_TEST_HOST").unwrap_or("127.0.0.1".into());
         std::fs::write(
             &pairing_path,
-            json!({"host":"127.0.0.1","port":port,"cert":hex(&cert),"code":code}).to_string(),
+            pairing(&c, &host).unwrap().to_string(),
         )
         .unwrap();
         let start = Instant::now();

@@ -54,7 +54,7 @@
         case 'companion_status': return T.companionStatus ?? { enabled: false, port: null, clients: [] };
         case 'companion_enable': return T.companionStatus = { enabled: true, port: args.port, clients: [] };
         case 'companion_disable': T.companionStatus = { enabled: false, port: null, clients: [] }; return null;
-        case 'companion_pairing': return { host: args.host, port: T.companionStatus.port, cert: 'fixture-certificate', code: 'fixture-code' };
+        case 'companion_pairing': if (T.pairingError) throw T.pairingError; return { host: args.host || '192.168.1.20', port: T.companionStatus.port, cert: 'fixture-certificate', code: 'fixture-code' };
         case 'companion_publish': T.companionSnapshot = args.snapshot; return null;
         case 'companion_remote': if (args.method === 'list') return []; return null;
         case 'companion_listen': {

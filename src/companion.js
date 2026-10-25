@@ -90,7 +90,7 @@ export function startCompanion({ state, panes, getUsage, openChat, showDialog, e
       <label>Port<input name="companion-port" type="number" value="${status.port ?? 47931}" min="1" max="65535"></label>
       <button type="button" data-enable>${enabled ? 'Disable linking' : 'Enable linking'}</button>
       <p class="dialog-note">Use the same Wi-Fi or a private network such as Tailscale. Windows/macOS may ask you to allow incoming connections. Pairing grants access to projects, usage, AI chat output, and sending messages.</p>
-      ${enabled ? '<label>This PC’s IP address or hostname<input name="companion-host" placeholder="192.168.1.20" autocomplete="off"></label><button type="button" data-pairing>Create pairing code</button><textarea data-code rows="4" readonly hidden aria-label="Pairing code"></textarea><p class="dialog-note">Paste the complete code into the phone or another Workbench. It expires after five minutes and can be used once.</p>' : ''}
+      ${enabled ? '<label>This PC’s IP address or hostname<input name="companion-host" placeholder="Detect automatically" autocomplete="off"></label><button type="button" data-pairing>Create pairing code</button><p data-pairing-status role="status"></p><textarea data-code rows="4" readonly hidden aria-label="Pairing code"></textarea><p class="dialog-note">Paste the complete code into the phone or another Workbench. It expires after five minutes and can be used once.</p>' : ''}
       ${status.clients.map(c => `<p>${escape(c.name)} <button type="button" data-revoke="${escape(c.id)}">Revoke access</button></p>`).join('')}
       <button type="button" data-clear>Clear delivered message receipts</button></fieldset>
       <fieldset><legend>Remote access from anywhere</legend>
@@ -106,7 +106,9 @@ export function startCompanion({ state, panes, getUsage, openChat, showDialog, e
       </fieldset>
       <fieldset><legend>Other computers</legend><label>Pairing code<textarea name="remote-code" rows="3" placeholder="Paste a code from the other PC"></textarea></label><label>Computer name<input name="remote-name" placeholder="Office PC"></label><button type="button" data-connect>Pair computer</button><div data-remotes></div></fieldset>
       <p data-error class="form-error" role="status"></p><div class="dialog-actions"><button type="button" data-dismiss>close</button></div>`);
-    const error = e => { box.querySelector('[data-error]').textContent = e?.message ?? String(e); };
+    const error = e => { const field = box.querySelector('[data-error]'); field.textContent = e?.message ?? String(e); field.scrollIntoView({ block: 'nearest' }); };
+    const hostField = box.querySelector('[name="companion-host"]');
+    if (hostField) hostField.value = status.addresses?.[0] ?? '';
     let mesh = { enabled: false }, checkingMesh = false;
     const updateMesh = async () => {
       if (!box.open || checkingMesh) return; checkingMesh = true;
@@ -167,8 +169,14 @@ export function startCompanion({ state, panes, getUsage, openChat, showDialog, e
       } catch (e) { error(e); }
     };
     box.querySelector('[data-pairing]')?.addEventListener('click', async () => {
-      try { const code = await backend.companionPairing(box.querySelector('[name="companion-host"]').value); const field = box.querySelector('[data-code]'); field.hidden = false; field.value = JSON.stringify(code); field.select(); }
-      catch (e) { error(e); }
+      const button = box.querySelector('[data-pairing]'), note = box.querySelector('[data-pairing-status]'), field = box.querySelector('[data-code]');
+      button.disabled = true; note.className = ''; note.textContent = 'Creating pairing code…'; field.hidden = true;
+      try {
+        const code = await backend.companionPairing(hostField.value.trim());
+        hostField.value = code.host; field.value = JSON.stringify(code); field.hidden = false; field.select();
+        note.textContent = 'Code ready. Connect your phone to the same Wi-Fi and paste this code into Link computer. It expires in five minutes.';
+      } catch (e) { note.className = 'form-error'; note.textContent = e?.message ?? String(e); }
+      finally { button.disabled = false; note.scrollIntoView({ block: 'nearest' }); }
     });
     box.querySelectorAll('[data-revoke]').forEach(b => b.onclick = async () => { try { await backend.companionRevoke(b.dataset.revoke); b.closest('p').remove(); } catch (e) { error(e); } });
     box.querySelector('[data-clear]').onclick = () => { try { queue?.clearDelivered(); } catch (e) { error(e); } };

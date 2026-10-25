@@ -665,8 +665,12 @@ try {
   await click('.app-header [data-action=computers]'); await wait(100);
   check('computer linking starts disabled', await q(`document.querySelector('dialog[open]').textContent.includes('Linking is off')`));
   await click('dialog [data-enable]'); await wait(150);
-  await page.eval(`document.querySelector('[name="companion-host"]').value = '192.168.1.20'`);
+  await page.eval(`document.querySelector('[name="companion-host"]').value = ''; __AIW_TEST__.pairingError = "No local Wi-Fi or Ethernet address found."`);
   await click('dialog [data-pairing]'); await wait(100);
+  check('pairing failures appear beside the button and allow retry', await q(`document.querySelector('[data-pairing-status]').textContent.includes('No local Wi-Fi') && !document.querySelector('[data-pairing]').disabled && document.querySelector('[data-code]').hidden`));
+  await page.eval(`__AIW_TEST__.pairingError = null`);
+  await click('dialog [data-pairing]'); await wait(100);
+  check('blank address requests automatic LAN detection and shows a usable code', (await calls('companion_pairing')).at(-1).host === '' && await q(`!document.querySelector('[data-code]').hidden && document.querySelector('[name="companion-host"]').value === '192.168.1.20' && document.querySelector('[data-pairing-status]').textContent.includes('Code ready')`));
   check('pairing is explicitly requested and includes the PC address', await q(`JSON.parse(document.querySelector('[data-code]').value).host === '192.168.1.20'`));
   await click('dialog [data-dismiss]');
   await show('codex', '› user draft\n\n? for shortcuts'); await wait(1900);
