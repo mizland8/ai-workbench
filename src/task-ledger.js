@@ -1,5 +1,6 @@
 import { coordinationPolicy } from './coordination.js';
 import { delegationTargets } from './store.js';
+import { guardQuota } from './quota.js';
 
 // Persist reports rather than typing into a busy parent's terminal. Completion is
 // an explicit worker report, never an inference from an idle terminal screen.
@@ -12,6 +13,7 @@ export const OPEN_STATUSES = ['queued', 'claimed', 'dispatching', 'submitted', '
 
 // What a worker is told after the task itself, whether Workbench typed it in or bridge next printed it.
 export const reportInstructions = id => `[AI Workbench task ${id}] Using the executable in AI_WORKBENCH_CLI, report with bridge complete ${id} <summary>, or bridge fail ${id} <reason>. Include changed files and checks in your summary. This report is saved for the requesting AI even while it is busy. Further tasks arrive in your prompt when you finish. ${coordinationPolicy}`;
+const finished = task => !OPEN_STATUSES.includes(task.status);
 
 export class TaskLedger {
   constructor(storage) {
@@ -27,13 +29,21 @@ export class TaskLedger {
 
   commit(tasks) {
     // A failed save must not acknowledge a report or dispatch a new prompt.
-    this.storage.setItem(KEY, JSON.stringify(tasks));
+    guardQuota(() => this.storage.setItem(KEY, JSON.stringify(tasks)));
     this.tasks = tasks;
+  }
+
+  // Forget every finished task, read or not. Tasks still being delivered or worked on stay.
+  purge() {
+    const kept = this.tasks.filter(t => !finished(t));
+    const removed = this.tasks.length - kept.length;
+    if (removed) this.commit(kept);
+    return removed;
   }
 
   create(fromId, toId, prompt) {
     const tasks = this.tasks.slice();
-    if (tasks.filter(t => !t.acknowledged).length >= LIMIT) throw new Error('Task history is full: 200 unresolved or unread tasks. Acknowledge reports with bridge ack before sending more tasks. Existing audit history is preserved.');
+    if (tasks.filter(t => !t.acknowledged).length >= LIMIT) throw new Error('Task history is full: 200 unresolved or unread tasks. Acknowledge reports with bridge ack before sending more tasks. Existing audit history is preserved. If the user wants to clear it, they can press “Purge finished tasks” in the AI handoffs window.');
     const at = new Date().toISOString();
     const task = { id: crypto.randomUUID(), fromId, toId, prompt, at, updatedAt: at, status: 'queued' };
     this.commit([...tasks, task]);

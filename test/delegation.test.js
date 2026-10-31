@@ -285,3 +285,31 @@ test('coordination entry points prescribe independent work and standby instead o
   assert.match(coordinationPolicy, /check bridge inbox once/);
   assert.match(coordinationPolicy, /end your turn and remain on standby/);
 });
+
+import { PURGE_HELP } from '../src/quota.js';
+const quotaError = () => Object.assign(new Error('The quota has been exceeded.'), { name: 'QuotaExceededError', code: 22 });
+test('a full storage quota tells the AI how the user can purge', async () => {
+  const { state, child, panes, request } = setup();
+  const storage = taskStorage();
+  const ledger = new TaskLedger(storage);
+  storage.setItem = () => { throw quotaError(); };
+  await assert.rejects(handleDelegation(state, panes, request('send'), () => {}, ledger), error => error.message === PURGE_HELP && /Purge finished tasks/.test(error.message));
+  assert.equal(child.received, undefined);
+  const board = new ProjectBoard(storage);
+  assert.throws(() => board.post('p', { id: 'c', title: 'Claude' }, 'note'), /Purge finished tasks/);
+});
+test('purge forgets finished tasks, keeps live ones, and frees the quota', async () => {
+  const { state, child, panes, request } = setup();
+  let value = null;
+  let capacity = Infinity;
+  const storage = { getItem: () => value, setItem: (_, next) => { if (next.length > capacity) throw quotaError(); value = next; } };
+  const ledger = new TaskLedger(storage);
+  const done = await handleDelegation(state, panes, request('send'), () => {}, ledger);
+  await handleDelegation(state, panes, { source: { chatId: child.id, terminalId: 2 }, method: 'complete', target: done.taskId, prompt: 'x'.repeat(400) }, () => {}, ledger);
+  const live = await handleDelegation(state, panes, request('send'), () => {}, ledger);
+  capacity = value.length;
+  await assert.rejects(handleDelegation(state, panes, request('send', undefined, 'A different task'), () => {}, ledger), /Purge finished tasks/);
+  assert.equal(ledger.purge(), 1);
+  assert.deepEqual(new TaskLedger(storage).tasks.map(t => t.id), [live.taskId]);
+  assert.equal(ledger.purge(), 0);
+});

@@ -6,6 +6,7 @@ import * as backend from './backend.js';
 import { handleDelegation, briefing } from './delegation.js';
 import { TaskLedger, reportInstructions } from './task-ledger.js';
 import { ProjectBoard } from './board.js';
+import { PURGE_HELP } from './quota.js';
 import { toolInfo, describeStatus } from './tools.js';
 import { TerminalView, isMac, isWindows } from './terminal.js';
 import { THEMES, THEME_LIST, THEME_GROUPS, DEFAULT_THEME, FONT_LIST } from './themes.js';
@@ -59,7 +60,7 @@ const dots = '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
 const stateMark = shown => shown === 'working' ? `<span class="run-dot is-working">${dots}</span>` : `<span class="run-dot is-${shown}"></span>`;
 
 function save() {
-  if (!store.saveState(localStorage, state)) notice = 'Unable to save: local storage is unavailable or full.';
+  if (!store.saveState(localStorage, state)) notice = 'Unable to save: local storage is unavailable or full. If it is full, open a chat’s menu → AI handoffs… and press “Purge finished tasks”.';
 }
 function update() { save(); render(); }
 
@@ -1282,8 +1283,27 @@ function boardHtml() {
   return `<h3>Project board</h3>${notes.map(n => `<details><summary>${escape(projectById(n.projectId)?.name ?? 'Removed project')} · ${escape(n.fromName)} · ${escape(new Date(n.at).toLocaleString())}</summary><pre class="handoff-prompt">${escape(n.text)}</pre></details>`).join('')}`;
 }
 
+// Local storage holds about 5 million characters per app; task history and notes share it.
+const storageUsed = () => { try { return Object.keys(localStorage).reduce((n, k) => n + k.length + (localStorage.getItem(k)?.length ?? 0), 0); } catch { return 0; } };
+
+function purgeHistoryDialog() {
+  const finished = taskLedger?.tasks.filter(t => ['completed', 'failed'].includes(t.status)) ?? [];
+  const unread = finished.filter(t => !t.acknowledged).length;
+  const notes = projectBoard?.notes.length ?? 0;
+  confirmDialog({ title: 'Purge saved history?', confirm: 'purge',
+    body: `This permanently deletes ${plural(finished.length, 'finished task')}${unread ? ` (${plural(unread, 'report')} no AI has acknowledged yet)` : ''}${notes ? ` and ${plural(notes, 'project board note')}` : ''}. Tasks still being worked on are kept. Chats and their conversations are not affected.`,
+    onConfirm: () => {
+      try { taskLedger?.purge(); projectBoard?.purge(); notice = 'Saved AI history purged.'; }
+      catch (error) { notice = `Purge failed: ${error.message}`; }
+      render();
+      handoffDialog();
+    } });
+}
+
 function handoffDialog() {
-  showDialog(`<h2>AI handoffs</h2><p class="dialog-note">Tracked tasks and worker reports are saved on this computer. Completion is reported by the worker; review its changes and checks.</p>${taskLedger?.tasks.length ? taskLedger.tasks.slice().reverse().map(t => `<details><summary>${escape(chatById(t.fromId)?.title ?? t.fromId)} → ${escape(chatById(t.toId)?.title ?? t.toId)} · ${escape(t.status)}</summary><p>Task ${escape(t.id)}</p><pre class="handoff-prompt">${escape(t.prompt)}</pre>${t.result ? `<pre class="handoff-prompt">${escape(t.result)}</pre>` : ''}${t.reports?.length ? `<details><summary>Report history (${t.reports.length})</summary>${t.reports.map(r => `<p>${escape(r.status)} · ${escape(r.at)}${r.acknowledged ? ' · acknowledged' : ''}</p><pre class="handoff-prompt">${escape(r.result)}</pre>`).join('')}</details>` : ''}</details>`).join('') : handoffs.length ? handoffs.slice().reverse().map(h => `<details><summary>${escape(h.from)} → ${escape(h.to)} · ${escape(new Date(h.at).toLocaleTimeString())}</summary><pre class="handoff-prompt">${escape(h.prompt)}</pre></details>`).join('') : '<p>No tasks have been sent yet.</p>'}${boardHtml()}<div class="dialog-actions"><button type="button" data-dismiss>close</button></div>`);
+  const used = storageUsed();
+  const dialog = showDialog(`<h2>AI handoffs</h2><p class="dialog-note">Tracked tasks and worker reports are saved on this computer. Completion is reported by the worker; review its changes and checks.</p><p class="dialog-note">Saved history uses about ${(used / 1e6).toFixed(1)} of roughly 5 MB. When it is full, AIs can no longer send tasks or post notes until you purge it.</p>${taskLedger?.tasks.length ? taskLedger.tasks.slice().reverse().map(t => `<details><summary>${escape(chatById(t.fromId)?.title ?? t.fromId)} → ${escape(chatById(t.toId)?.title ?? t.toId)} · ${escape(t.status)}</summary><p>Task ${escape(t.id)}</p><pre class="handoff-prompt">${escape(t.prompt)}</pre>${t.result ? `<pre class="handoff-prompt">${escape(t.result)}</pre>` : ''}${t.reports?.length ? `<details><summary>Report history (${t.reports.length})</summary>${t.reports.map(r => `<p>${escape(r.status)} · ${escape(r.at)}${r.acknowledged ? ' · acknowledged' : ''}</p><pre class="handoff-prompt">${escape(r.result)}</pre>`).join('')}</details>` : ''}</details>`).join('') : handoffs.length ? handoffs.slice().reverse().map(h => `<details><summary>${escape(h.from)} → ${escape(h.to)} · ${escape(new Date(h.at).toLocaleTimeString())}</summary><pre class="handoff-prompt">${escape(h.prompt)}</pre></details>`).join('') : '<p>No tasks have been sent yet.</p>'}${boardHtml()}<div class="dialog-actions"><button type="button" class="danger" data-purge>Purge finished tasks</button><button type="button" data-dismiss>close</button></div>`);
+  dialog.querySelector('[data-purge]').addEventListener('click', purgeHistoryDialog);
 }
 
 async function attachFiles(id) {
@@ -1542,7 +1562,7 @@ setInterval(deliverWork, 2000);
 
 backend.resetTerminals().then(() => backend.listenDelegation(request => {
   if (!taskLedger) throw new Error('Task storage is unavailable; no prompt was sent.');
-  return handleDelegation(state, panes, request, handoff => {
+  return Promise.resolve(handleDelegation(state, panes, request, handoff => {
     handoffs.push(handoff);
     if (handoffs.length > 100) handoffs.shift();
     notice = `AI handoff: ${handoff.from} → ${handoff.to}`;
@@ -1557,6 +1577,9 @@ backend.resetTerminals().then(() => backend.listenDelegation(request => {
       setTimeout(deliverWork, 0);
     },
     onQueued: () => setTimeout(deliverWork, 0),
+  })).catch(error => {
+    if (error?.message === PURGE_HELP) { notice = 'Saved AI history is full. Open a chat’s menu → AI handoffs… and press “Purge finished tasks”.'; renderStatus(); }
+    throw error;
   }).finally(() => { for (const pane of panes.values()) pane.renderQueue(); });
 })).catch(error => { notice = `AI delegation unavailable: ${error}`; }).finally(() => {
   render();

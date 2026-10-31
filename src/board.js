@@ -1,5 +1,7 @@
 // Short notes the AI chats of a project share: what each is doing, which files it owns, what it
 // finished. Saved on this computer; only AI chats in the same project can read or post.
+import { guardQuota } from './quota.js';
+
 const KEY = 'ai-workbench.board.v1';
 const PER_PROJECT = 100;
 const TEXT_LIMIT = 4000;
@@ -22,7 +24,7 @@ export class ProjectBoard {
     const mine = this.notes.filter(n => n.projectId === projectId);
     const dropped = new Set(mine.slice(0, Math.max(0, mine.length + 1 - PER_PROJECT)).map(n => n.id));
     const notes = [...this.notes.filter(n => !dropped.has(n.id)), note];
-    this.storage.setItem(KEY, JSON.stringify(notes));
+    guardQuota(() => this.storage.setItem(KEY, JSON.stringify(notes)));
     this.notes = notes;
     return note;
   }
@@ -33,6 +35,12 @@ export class ProjectBoard {
 
   latest(projectId, fromId) {
     return this.notes.findLast(n => n.projectId === projectId && n.fromId === fromId) ?? null;
+  }
+
+  purge() {
+    const removed = this.notes.length;
+    if (removed) { this.storage.setItem(KEY, '[]'); this.notes = []; }
+    return removed;
   }
 
   removeProject(projectId) {
