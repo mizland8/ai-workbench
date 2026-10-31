@@ -74,7 +74,7 @@ test('selected scoped permission settings persist without replacing sessions or 
   const loaded = store.normalize(JSON.parse(JSON.stringify(s.state)));
   assert.equal(loaded.chats[0].sessionId, 'saved-session');
   const flags = store.toolOptions(loaded.settings, 'codex').flatMap(o => o.args);
-  assert.deepEqual(flags, ['--ask-for-approval', 'on-request', '--sandbox', 'workspace-write']);
+  assert.deepEqual(flags, ['--ask-for-approval', 'never', '--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true', '-c', store.WRITABLE_ROOTS]);
   loaded.settings.approvals.codex = 'never';
   assert.equal(store.toolOptions(loaded.settings, 'codex')[0].args[1], 'never');
   assert.match(store.addChat(loaded, 'codex', loaded.projects[0].id).title, /^Codex \d+$/);

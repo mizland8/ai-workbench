@@ -341,12 +341,79 @@ fn add_options(args: &mut Vec<String>, options: &[ToolOption], supports: impl Fn
     let mut skipped = Vec::new();
     for option in options.iter().filter(|o| !o.args.is_empty()) {
         if supports(&option.flag) {
-            args.extend(option.args.iter().cloned());
+            args.extend(option.args.iter().map(|a| if a == WRITABLE_ROOTS { writable_roots_config(&writable_roots()) } else { a.clone() }));
         } else {
             skipped.push(option.label.clone());
         }
     }
     skipped
+}
+
+/// Settings placeholder for the folders the "work freely" Codex mode may change.
+const WRITABLE_ROOTS: &str = "{workbench:writable-roots}";
+const ROOTS_KEY: &str = "sandbox_workspace_write.writable_roots=";
+
+/// The home folder plus each flash drive, SD card or phone in storage mode mounted right now.
+/// System folders are left out, so the sandbox keeps them read-only. Drives are listed one by one:
+/// Codex's Linux sandbox refuses a root-owned folder such as /mnt, and /Volumes on a Mac also
+/// links to the system disk. A drive plugged in later needs the chat restarted.
+fn writable_roots() -> Vec<PathBuf> {
+    let home = env::home_dir();
+    let mut roots = vec![home.clone()];
+    #[cfg(unix)]
+    {
+        let user = env::var("USER").map(|u| u.to_string_lossy().into_owned()).unwrap_or_default();
+        let parents: Vec<PathBuf> = if cfg!(target_os = "macos") { vec!["/Volumes".into()] }
+            else { vec![format!("/run/media/{user}").into(), format!("/media/{user}").into(), "/media".into(), "/mnt".into()] };
+        for parent in parents {
+            for entry in std::fs::read_dir(&parent).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if entry.file_type().is_ok_and(|t| t.is_dir() && !t.is_symlink()) && !path.starts_with(&home) && can_write(&path) {
+                    roots.push(path);
+                }
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        let system = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()).to_ascii_uppercase();
+        roots.extend((b'A'..=b'Z').map(|l| format!("{}:", l as char)).filter(|d| *d != system).map(|d| PathBuf::from(format!("{d}\\"))).filter(|p| p.is_dir()));
+    }
+    roots.dedup();
+    roots
+}
+
+#[cfg(unix)]
+fn can_write(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    std::ffi::CString::new(path.as_os_str().as_bytes()).is_ok_and(|p| unsafe { libc::access(p.as_ptr(), libc::W_OK) } == 0)
+}
+
+// TOML literal strings keep Windows backslashes as they are and need no double quotes, which
+// cmd.exe would mangle for npm-installed CLIs. A path that can't be written that way is left out.
+fn writable_roots_config(roots: &[PathBuf]) -> String {
+    let items: Vec<_> = roots.iter().map(|p| p.to_string_lossy().into_owned())
+        .filter(|p| !p.chars().any(|c| c.is_control() || "'\"%&|<>^`".contains(c)))
+        .map(|p| format!("'{p}'")).collect();
+    format!("{ROOTS_KEY}[{}]", items.join(","))
+}
+
+/// adb's background server is what opens USB devices. Started here, outside the AI's sandbox, the
+/// sandboxed AI only has to reach it over localhost. Does nothing when adb isn't installed.
+fn start_adb_server() {
+    thread::spawn(|| {
+        let home = env::home_dir();
+        let mut dirs = vec![];
+        if let Some(sdk) = env::var("ANDROID_HOME").or_else(|| env::var("ANDROID_SDK_ROOT")) { dirs.push(PathBuf::from(sdk).join("platform-tools")); }
+        dirs.extend(["Library/Android/sdk/platform-tools", "Android/Sdk/platform-tools", "AppData/Local/Android/Sdk/platform-tools"].map(|d| home.join(d)));
+        let adb = which::which_in("adb", Some(env::search_path()), &home).ok()
+            .or_else(|| dirs.iter().map(|d| d.join(if cfg!(windows) { "adb.exe" } else { "adb" })).find(|p| p.is_file()));
+        if let Some(adb) = adb {
+            let mut cmd = std::process::Command::new(adb);
+            cmd.arg("start-server").current_dir(&home).env_clear().envs(env::user_env());
+            let _ = env::run_captured(cmd, Duration::from_secs(15));
+        }
+    });
 }
 
 fn command_for(program: &Path, args: &[String]) -> CommandBuilder {
@@ -380,6 +447,9 @@ fn start(terminals: &Terminals, request: StartRequest, events: Channel<InvokeRes
 
 fn start_with_bridge(terminals: &Terminals, request: StartRequest, events: Channel<InvokeResponseBody>, bridge: Option<&crate::bridge::Bridge>) -> Result<Started, String> {
     let plan = plan(&request)?;
+    if plan.args.iter().any(|a| a.starts_with(ROOTS_KEY)) {
+        start_adb_server();
+    }
     let pty = native_pty_system()
         .openpty(PtySize { rows: request.rows.max(2), cols: request.cols.max(10), pixel_width: 0, pixel_height: 0 })
         .map_err(|e| format!("Couldn't open a terminal: {e}"))?;
@@ -678,6 +748,20 @@ mod tests {
         assert!(validate_permission_options(&[option], |flag| flag == "--ask-for-approval").unwrap_err().contains("--sandbox"));
         let option = ToolOption { label: "full access".into(), flag: "--dangerously-bypass-approvals-and-sandbox".into(), args: vec!["--dangerously-bypass-approvals-and-sandbox".into()], permission: None };
         assert!(validate_permission_options(&[option], |_| true).is_ok());
+    }
+
+    #[test]
+    fn work_freely_mode_writes_home_and_drive_folders_but_not_the_system() {
+        let config = writable_roots_config(&[PathBuf::from("/home/a b"), PathBuf::from("C:\\Users\\x"), PathBuf::from("/odd'name"), PathBuf::from("/a%b")]);
+        assert_eq!(config, "sandbox_workspace_write.writable_roots=['/home/a b','C:\\Users\\x']");
+        let roots = writable_roots();
+        assert_eq!(roots[0], env::home_dir());
+        assert!(!roots.iter().any(|r| r == Path::new("/") || r == Path::new("/usr") || r == Path::new("/System")));
+        let option = ToolOption { label: "work freely".into(), flag: "--ask-for-approval".into(), args: vec!["-c".into(), WRITABLE_ROOTS.into()], permission: None };
+        let mut args = vec![];
+        add_options(&mut args, &[option], |_| true);
+        assert_eq!(args[0], "-c");
+        assert!(args[1].starts_with(ROOTS_KEY) && args[1].contains(&*env::home_dir().to_string_lossy()));
     }
 
     #[test]

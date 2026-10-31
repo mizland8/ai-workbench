@@ -24,14 +24,20 @@ const renamedTools = { gemini: 'agy' };
 
 export function defaultSettings() {
   // localServer: where new local-model chats look for models; empty means this computer.
-  // approvals: the approval mode chosen for each AI (see APPROVAL_MODES); codexWindowsSandbox
+  // approvals: the approval mode chosen for each AI (see APPROVAL_MODES). AIs work without approval
+  // prompts by default (Codex stays sandboxed away from system folders); fullAccessApplied marks that
+  // settings saved before this default were switched over once.
+  // codexWindowsSandbox
   // uses Codex's unelevated Windows sandbox, which keeps working while the Codex app is open.
   return { fontSize: 13, font: DEFAULT_FONT, notifications: true, notifyResets: true, checkUpdates: true, flash: true, reopenChats: true, confirmRemove: true, dockWidth: 460, toolArgs: {}, localServer: '',
-    approvals: { claude: 'ask', codex: 'ask', agy: 'ask' }, codexWindowsSandbox: true };
+    approvals: { claude: 'all', codex: 'wide', agy: 'all', opencode: 'all' }, codexWindowsSandbox: true, fullAccessApplied: true };
 }
 
 // How much each AI may do without asking. `flag` must appear in the CLI's --help for the option
 // to be passed, so a version without it still starts (the chat says it was left out).
+// Replaced when the chat starts by this computer's home folder and removable-drive folders.
+export const WRITABLE_ROOTS = '{workbench:writable-roots}';
+
 export const APPROVAL_MODES = {
   claude: [
     { id: 'ask', name: 'Ask before acting', note: 'Claude Code’s own default.' },
@@ -44,6 +50,7 @@ export const APPROVAL_MODES = {
     { id: 'ask', name: 'Ask before acting', note: 'Workspace writes, protected .git/.codex/.agents paths read-only, network restricted; user approval for operations beyond these limits. Managed policy can restrict approvals.', flag: '--ask-for-approval', args: ['--ask-for-approval', 'on-request', '--sandbox', 'workspace-write'] },
     { id: 'review', name: 'Automatic review', note: 'Codex reviews its own approval requests; commands stay in the sandbox.', flag: '--approve-for-me', args: ['--approve-for-me'] },
     { id: 'never', name: 'Never ask, stay sandboxed', note: 'Commands run in the sandbox without asking: they can change the project folder but not the rest of the computer or the network.', flag: '--ask-for-approval', args: ['--ask-for-approval', 'never', '--sandbox', 'workspace-write'] },
+    { id: 'wide', name: 'Work freely, protect the system', note: 'No approval prompts. Codex can change anything in your home folder, flash drives and other removable drives, use the network, and reach connected phones and tablets (adb, iPhone tools). System folders stay read-only; .git, .codex and .agents stay protected.', flag: '--ask-for-approval', args: ['--ask-for-approval', 'never', '--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true', '-c', WRITABLE_ROOTS] },
     { id: 'all', name: 'Approve everything, no sandbox', note: 'Commands run with your full access to the computer and network. Use with care.', flag: '--dangerously-bypass-approvals-and-sandbox', args: ['--dangerously-bypass-approvals-and-sandbox'], risky: true },
   ],
   opencode: [
@@ -91,11 +98,15 @@ function normalizeSettings(value) {
   settings.fontSize = clamp(value.fontSize, 9, 24, settings.fontSize);
   settings.dockWidth = clamp(value.dockWidth, 260, 900, settings.dockWidth);
   if (isText(value.font) && FONTS[value.font]) settings.font = value.font;
+  const upgrade = value.fullAccessApplied !== true;
   for (const key of ['notifications', 'notifyResets', 'checkUpdates', 'flash', 'reopenChats', 'confirmRemove', 'codexWindowsSandbox']) if (typeof value[key] === 'boolean') settings[key] = value[key];
   if (isObject(value.toolArgs)) {
-    for (const tool of AI_TOOLS) if (isText(value.toolArgs[tool]) && value.toolArgs[tool].trim()) settings.toolArgs[tool] = value.toolArgs[tool];
+    for (const tool of AI_TOOLS) if (isText(value.toolArgs[tool]) && value.toolArgs[tool].trim()) {
+      const args = upgrade ? unattendedArgs(tool, value.toolArgs[tool]) : value.toolArgs[tool];
+      if (args) settings.toolArgs[tool] = args;
+    }
   }
-  if (isObject(value.approvals)) {
+  if (isObject(value.approvals) && !upgrade) {
     for (const [tool, modes] of Object.entries(APPROVAL_MODES)) if (modes.some(m => m.id === value.approvals[tool])) settings.approvals[tool] = value.approvals[tool];
   }
   if (isText(value.localServer)) settings.localServer = value.localServer.trim().slice(0, 200);

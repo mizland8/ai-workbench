@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged into the macOS app by Tauri. AI chats run inside Workbench, so macOS asks on Workbench's
+     behalf; without these descriptions it denies the access silently instead of asking. -->
+<plist version="1.0">
+<dict>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>AI chats in Workbench work with files on flash drives, SD cards and connected devices when you ask them to.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>AI chats in Workbench work with files on network drives when you ask them to.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>AI chats in Workbench work with files on your Desktop when you ask them to.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>AI chats in Workbench work with files in your Documents folder when you ask them to.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>AI chats in Workbench work with files in your Downloads folder when you ask them to.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Workbench connects to your phone and other computers on your Wi-Fi when you link them.</string>
+</dict>
+</plist>
