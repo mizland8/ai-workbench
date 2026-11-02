@@ -1286,15 +1286,29 @@ function boardHtml() {
 // Local storage holds about 5 million characters per app; task history and notes share it.
 const storageUsed = () => { try { return Object.keys(localStorage).reduce((n, k) => n + k.length + (localStorage.getItem(k)?.length ?? 0), 0); } catch { return 0; } };
 
-function purgeHistoryDialog() {
-  const finished = taskLedger?.tasks.filter(t => ['completed', 'failed'].includes(t.status)) ?? [];
+// "Purge finished tasks" tidies up; "Purge all" also drops tasks still queued or claimed, for a stuck
+// loop or a bug that keeps resending work. Prompts already typed into a chat can't be taken back.
+function purgeHistoryDialog(all = false) {
+  const tasks = taskLedger?.tasks ?? [];
+  const finished = tasks.filter(t => ['completed', 'failed', 'cancelled'].includes(t.status));
+  const open = tasks.length - finished.length;
   const unread = finished.filter(t => !t.acknowledged).length;
   const notes = projectBoard?.notes.length ?? 0;
-  confirmDialog({ title: 'Purge saved history?', confirm: 'purge',
-    body: `This permanently deletes ${plural(finished.length, 'finished task')}${unread ? ` (${plural(unread, 'report')} no AI has acknowledged yet)` : ''}${notes ? ` and ${plural(notes, 'project board note')}` : ''}. Tasks still being worked on are kept. Chats and their conversations are not affected.`,
+  const board = notes ? ` and ${plural(notes, 'project board note')}` : '';
+  confirmDialog({ title: all ? 'Purge everything?' : 'Purge saved history?', confirm: all ? 'purge all' : 'purge',
+    body: all
+      ? `This permanently deletes all ${plural(tasks.length, 'task')}${open ? `, including ${plural(open, 'unfinished task')} still queued or being worked on` : ''}${unread ? ` and ${plural(unread, 'report')} no AI has acknowledged yet` : ''}${board}. Queued messages are dropped. A task an AI has already received stays in its chat, but its report will be rejected as unknown. Chats and their conversations are not affected.`
+      : `This permanently deletes ${plural(finished.length, 'finished task')}${unread ? ` (${plural(unread, 'report')} no AI has acknowledged yet)` : ''}${board}. Tasks still being worked on are kept. Chats and their conversations are not affected.`,
     onConfirm: () => {
-      try { taskLedger?.purge(); projectBoard?.purge(); notice = 'Saved AI history purged.'; }
-      catch (error) { notice = `Purge failed: ${error.message}`; }
+      try {
+        if (all) {
+          taskLedger?.purgeAll();
+          reportNotices.clear(); delivering.clear(); deliveryAttempts.clear(); lastSubmit.clear();
+          for (const pane of panes.values()) pane.renderQueue();
+        } else taskLedger?.purge();
+        projectBoard?.purge();
+        notice = all ? 'All AI tasks and notes purged.' : 'Saved AI history purged.';
+      } catch (error) { notice = `Purge failed: ${error.message}`; }
       render();
       handoffDialog();
     } });
@@ -1302,8 +1316,9 @@ function purgeHistoryDialog() {
 
 function handoffDialog() {
   const used = storageUsed();
-  const dialog = showDialog(`<h2>AI handoffs</h2><p class="dialog-note">Tracked tasks and worker reports are saved on this computer. Completion is reported by the worker; review its changes and checks.</p><p class="dialog-note">Saved history uses about ${(used / 1e6).toFixed(1)} of roughly 5 MB. When it is full, AIs can no longer send tasks or post notes until you purge it.</p>${taskLedger?.tasks.length ? taskLedger.tasks.slice().reverse().map(t => `<details><summary>${escape(chatById(t.fromId)?.title ?? t.fromId)} → ${escape(chatById(t.toId)?.title ?? t.toId)} · ${escape(t.status)}</summary><p>Task ${escape(t.id)}</p><pre class="handoff-prompt">${escape(t.prompt)}</pre>${t.result ? `<pre class="handoff-prompt">${escape(t.result)}</pre>` : ''}${t.reports?.length ? `<details><summary>Report history (${t.reports.length})</summary>${t.reports.map(r => `<p>${escape(r.status)} · ${escape(r.at)}${r.acknowledged ? ' · acknowledged' : ''}</p><pre class="handoff-prompt">${escape(r.result)}</pre>`).join('')}</details>` : ''}</details>`).join('') : handoffs.length ? handoffs.slice().reverse().map(h => `<details><summary>${escape(h.from)} → ${escape(h.to)} · ${escape(new Date(h.at).toLocaleTimeString())}</summary><pre class="handoff-prompt">${escape(h.prompt)}</pre></details>`).join('') : '<p>No tasks have been sent yet.</p>'}${boardHtml()}<div class="dialog-actions"><button type="button" class="danger" data-purge>Purge finished tasks</button><button type="button" data-dismiss>close</button></div>`);
-  dialog.querySelector('[data-purge]').addEventListener('click', purgeHistoryDialog);
+  const dialog = showDialog(`<h2>AI handoffs</h2><p class="dialog-note">Tracked tasks and worker reports are saved on this computer. Completion is reported by the worker; review its changes and checks.</p><p class="dialog-note">Saved history uses about ${(used / 1e6).toFixed(1)} of roughly 5 MB. When it is full, AIs can no longer send tasks or post notes until you purge it.</p>${taskLedger?.tasks.length ? taskLedger.tasks.slice().reverse().map(t => `<details><summary>${escape(chatById(t.fromId)?.title ?? t.fromId)} → ${escape(chatById(t.toId)?.title ?? t.toId)} · ${escape(t.status)}</summary><p>Task ${escape(t.id)}</p><pre class="handoff-prompt">${escape(t.prompt)}</pre>${t.result ? `<pre class="handoff-prompt">${escape(t.result)}</pre>` : ''}${t.reports?.length ? `<details><summary>Report history (${t.reports.length})</summary>${t.reports.map(r => `<p>${escape(r.status)} · ${escape(r.at)}${r.acknowledged ? ' · acknowledged' : ''}</p><pre class="handoff-prompt">${escape(r.result)}</pre>`).join('')}</details>` : ''}</details>`).join('') : handoffs.length ? handoffs.slice().reverse().map(h => `<details><summary>${escape(h.from)} → ${escape(h.to)} · ${escape(new Date(h.at).toLocaleTimeString())}</summary><pre class="handoff-prompt">${escape(h.prompt)}</pre></details>`).join('') : '<p>No tasks have been sent yet.</p>'}${boardHtml()}<div class="dialog-actions"><button type="button" class="danger" data-purge>Purge finished tasks</button><button type="button" class="danger" data-purge-all>Purge all</button><button type="button" data-dismiss>close</button></div>`);
+  dialog.querySelector('[data-purge]').addEventListener('click', () => purgeHistoryDialog());
+  dialog.querySelector('[data-purge-all]').addEventListener('click', () => purgeHistoryDialog(true));
 }
 
 async function attachFiles(id) {

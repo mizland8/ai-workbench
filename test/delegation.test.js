@@ -313,3 +313,17 @@ test('purge forgets finished tasks, keeps live ones, and frees the quota', async
   assert.deepEqual(new TaskLedger(storage).tasks.map(t => t.id), [live.taskId]);
   assert.equal(ledger.purge(), 0);
 });
+test('purge all also drops queued and claimed tasks', async () => {
+  const { state, panes, request } = setup();
+  const storage = taskStorage();
+  const ledger = new TaskLedger(storage);
+  await handleDelegation(state, panes, request('send'), () => {}, ledger);
+  await handleDelegation(state, panes, request('send', undefined, 'Another task'), () => {}, ledger);
+  ledger.update(ledger.tasks[0].id, { status: 'claimed' });
+  assert.equal(ledger.purge(), 0);
+  assert.equal(ledger.purgeAll(), 2);
+  assert.equal(new TaskLedger(storage).tasks.length, 0);
+  assert.equal(ledger.purgeAll(), 0);
+  await handleDelegation(state, panes, request('send', undefined, 'After the purge'), () => {}, ledger);
+  assert.equal(ledger.tasks.length, 1);
+});

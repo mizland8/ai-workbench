@@ -41,6 +41,13 @@ export class TaskLedger {
     return removed;
   }
 
+  // Forget every task, including queued and claimed ones: the way out of a loop or a stuck queue.
+  purgeAll() {
+    const removed = this.tasks.length;
+    if (removed) this.commit([]);
+    return removed;
+  }
+
   create(fromId, toId, prompt) {
     const tasks = this.tasks.slice();
     if (tasks.filter(t => !t.acknowledged).length >= LIMIT) throw new Error('Task history is full: 200 unresolved or unread tasks. Acknowledge reports with bridge ack before sending more tasks. Existing audit history is preserved. If the user wants to clear it, they can press “Purge finished tasks” in the AI handoffs window.');
