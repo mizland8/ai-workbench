@@ -103,9 +103,31 @@ fn server_name(client: &Client, server: &str) -> &'static str {
     }
 }
 
+/// Why a request failed, from the system's own words ("Connection refused", "timed out"…).
+fn failure_reason(error: &reqwest::Error) -> String {
+    let mut reasons = Vec::new();
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        reasons.push(cause.to_string());
+        source = cause.source();
+    }
+    if reasons.is_empty() {
+        reasons.push(if error.is_timeout() { "timed out".to_string() } else { error.to_string() });
+    }
+    reasons.join(": ")
+}
+
 fn ask(client: &Client, server: &str) -> Result<LocalServer, String> {
-    let unreachable = || format!("Nothing answered at {server}. Check that the model server is running and accepts connections from this computer.");
-    let response = client.get(format!("{server}/v1/models")).send().map_err(|_| unreachable())?;
+    let unreachable = |error: &reqwest::Error| {
+        let reason = failure_reason(error);
+        let mac = if cfg!(target_os = "macos") && !server.contains("127.0.0.1") && !server.contains("localhost") {
+            " On a Mac, also check System Settings → Privacy & Security → Local Network."
+        } else {
+            ""
+        };
+        format!("Nothing answered at {server} ({reason}). Check that the model server is running and accepts connections from this computer.{mac}")
+    };
+    let response = client.get(format!("{server}/v1/models")).send().map_err(|e| unreachable(&e))?;
     if !response.status().is_success() {
         return Err(format!("{server} answered, but not with a list of models ({}). Is it LM Studio, Ollama or another OpenAI-compatible server?", response.status()));
     }
