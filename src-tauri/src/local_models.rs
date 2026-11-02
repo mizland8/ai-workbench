@@ -220,7 +220,9 @@ mod tests {
     fn a_server_that_isnt_running_is_reported() {
         // Port 9 (discard) has nothing listening on a normal machine.
         let problem = find("127.0.0.1:9").err().unwrap();
-        assert!(problem.starts_with("Nothing answered at http://127.0.0.1:9."), "{problem}");
+        // The system's own reason follows in brackets; its wording differs between systems.
+        assert!(problem.starts_with("Nothing answered at http://127.0.0.1:9 ("), "{problem}");
+        assert!(problem.contains("Check that the model server is running"), "{problem}");
         assert!(find("not an address").err().unwrap().contains("isn't an address"));
     }
 }
